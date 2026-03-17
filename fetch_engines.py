@@ -19,26 +19,26 @@ REAL_HEADERS = {
 }
 
 async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, session_file: str = None) -> str:
-    """CFFI 引擎：极速请求，现已全面兼容 Playwright Session 格式，支持双引擎状态互通"""
+    """CFFI 引擎：极速请求，支持与 Playwright 格式互通的 Session 持久化"""
     proxies = {"http": proxy, "https": proxy} if proxy else None
     
     # 统一使用 Playwright 兼容的 state 结构
     pw_state = {"cookies": [], "origins": []}
-    cffi_cookies = {} # 提取给 CFFI 用的扁平字典
+    cffi_cookies = {} 
     
     if session_file and os.path.exists(session_file):
         try:
             with open(session_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 
-            if "cookies" in data:
-                # 1. 发现 Playwright 标准格式
+            if isinstance(data, dict) and "cookies" in data:
+                # 1. Playwright 标准格式
                 pw_state = data
                 for c in data["cookies"]:
                     cffi_cookies[c["name"]] = c["value"]
-                print(f"[*] 🍪 成功加载与 Playwright 兼容的 Session: {session_file}", file=sys.stderr)
+                print(f"[*] 🍪 成功加载 Session 凭证: {os.path.basename(session_file)}", file=sys.stderr)
             else:
-                # 2. 兼容旧版 CFFI 扁平字典格式，并在后续自动升级为新格式
+                # 2. 兼容旧版扁平字典格式并自动升级
                 cffi_cookies = data
                 target_domain = urlparse(url).netloc
                 for k, v in data.items():
@@ -47,7 +47,7 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
                         "path": "/", "expires": -1, "httpOnly": False,
                         "secure": False, "sameSite": "Lax"
                     })
-                print(f"[*] 🍪 成功加载旧版 CFFI Session (将自动升级格式): {session_file}", file=sys.stderr)
+                print(f"[*] 🍪 加载旧版 Cookie 格式 (已自动执行转换)", file=sys.stderr)
         except Exception as e:
             print(f"[!] 读取 Session 文件失败: {e}", file=sys.stderr)
 
@@ -61,7 +61,7 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
                 new_cookies_map = {}
                 target_domain = urlparse(url).netloc
                 
-                # 尝试从 cookiejar 提取完整属性，如果版本不支持则退化为字典提取
+                # 从 cookiejar 提取完整属性
                 if hasattr(session.cookies, 'jar'):
                     for cookie in session.cookies.jar:
                         new_cookies_map[(cookie.name, cookie.domain)] = {
@@ -82,7 +82,7 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
                             "secure": False, "sameSite": "Lax"
                         }
 
-                # 与原有的 Playwright cookies 进行合并（更新存在的，保留其他的）
+                # 合并新旧 Cookie
                 merged_cookies = []
                 for old_c in pw_state["cookies"]:
                     key = (old_c["name"], old_c.get("domain", target_domain))
@@ -91,23 +91,21 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
                     else:
                         merged_cookies.append(old_c)
                         
-                # 追加新增的 cookies
                 merged_cookies.extend(new_cookies_map.values())
                 pw_state["cookies"] = merged_cookies
 
                 with open(session_file, 'w', encoding='utf-8') as f:
                     json.dump(pw_state, f, indent=2)
             except Exception as e:
-                print(f"[!] 保存 CFFI Session 失败: {e}", file=sys.stderr)
+                print(f"[!] 保存 Cookie 状态失败: {e}", file=sys.stderr)
                 
         return response.text
 
-async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, session_file: str = None, is_login_mode: bool = False, wait: int = 3) -> str:
-    """Playwright 引擎：全真浏览器，支持登录交互与原生会话持久化"""
+async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, session_file: str = None, is_interactive: bool = False, wait: int = 3) -> str:
+    """Playwright 引擎：全真浏览器，支持人工干预交互与原生会话持久化"""
     async with async_playwright() as p:
-        headless_mode = not is_login_mode
         browser = await p.chromium.launch(
-            headless=headless_mode,
+            headless=not is_interactive,
             proxy={"server": proxy} if proxy else None,
             args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
@@ -120,21 +118,20 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
         
         if session_file and os.path.exists(session_file):
             try:
-                # 兼容性修复：如果遇到之前 CFFI 创建的旧版纯字典格式，Playwright 加载会崩溃，直接拦截跳过
                 with open(session_file, 'r', encoding='utf-8') as f:
                     check_data = json.load(f)
-                if "cookies" not in check_data:
-                    print(f"[!] 警告: 检测到不兼容的旧版 CFFI Cookie 格式，将以新会话启动以避免崩溃。", file=sys.stderr)
-                else:
+                if isinstance(check_data, dict) and "cookies" in check_data:
                     context_args["storage_state"] = session_file
-                    print(f"[*] 🎫 成功注入 Playwright 登录状态: {session_file}", file=sys.stderr)
+                    print(f"[*] 🎫 注入 Playwright 存储状态: {os.path.basename(session_file)}", file=sys.stderr)
+                else:
+                    print(f"[!] 警告: Session 格式不兼容，将以干净会话启动。", file=sys.stderr)
             except Exception as e:
-                print(f"[!] 读取状态文件失败，将以新会话启动: {e}", file=sys.stderr)
+                print(f"[!] 读取状态文件失败: {e}", file=sys.stderr)
                 
         context = await browser.new_context(**context_args)
         
-        # 终极防丢可拖拽版：全局悬浮按钮脚本
-        if is_login_mode:
+        # 终极版：可拖拽人工干预按钮脚本
+        if is_interactive:
             inject_js = """
             (() => {
                 if (window._claw_injected) return;
@@ -142,91 +139,56 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                 
                 const injectBtn = () => {
                     if (document.getElementById('claw-done-btn')) return;
-                    
                     const btn = document.createElement('div');
                     btn.id = 'claw-done-btn';
-                    btn.innerHTML = '✅ 登录/验证完成，点击继续';
+                    btn.innerHTML = '✅ 操作/验证已完成，点击继续';
                     
-                    // 基础样式设置 (支持拖拽视觉)
-                    btn.style.position = 'fixed';
-                    btn.style.zIndex = '2147483647';
-                    btn.style.padding = '15px 25px';
-                    btn.style.background = '#00C853';
-                    btn.style.color = 'white';
-                    btn.style.border = 'none';
-                    btn.style.borderRadius = '8px';
-                    btn.style.fontSize = '16px';
-                    btn.style.fontWeight = 'bold';
-                    btn.style.cursor = 'move';
-                    btn.style.boxShadow = '0 4px 15px rgba(0,0,0,0.4)';
-                    btn.style.userSelect = 'none'; 
-                    btn.style.transition = 'background 0.2s, transform 0.2s';
+                    Object.assign(btn.style, {
+                        position: 'fixed', zIndex: '2147483647', padding: '15px 25px',
+                        background: '#00C853', color: 'white', border: 'none',
+                        borderRadius: '8px', fontSize: '16px', fontWeight: 'bold',
+                        cursor: 'move', boxShadow: '0 4px 15px rgba(0,0,0,0.4)',
+                        userSelect: 'none', transition: 'background 0.2s, transform 0.2s'
+                    });
                     
-                    // 恢复上次拖拽的位置
                     if (window._claw_btn_pos) {
                         btn.style.left = window._claw_btn_pos.left;
                         btn.style.top = window._claw_btn_pos.top;
                     } else {
-                        btn.style.top = '20px';
-                        btn.style.right = '20px';
+                        btn.style.top = '20px'; btn.style.right = '20px';
                     }
                     
                     let isDragging = false;
                     let startX, startY, initialLeft, initialTop;
-                    let clickStartX, clickStartY;
                     
                     btn.onmousedown = (e) => {
                         isDragging = true;
-                        startX = e.clientX;
-                        startY = e.clientY;
-                        clickStartX = e.clientX;
-                        clickStartY = e.clientY;
-                        
+                        startX = e.clientX; startY = e.clientY;
                         const rect = btn.getBoundingClientRect();
-                        initialLeft = rect.left;
-                        initialTop = rect.top;
-                        
-                        btn.style.transition = 'none'; 
+                        initialLeft = rect.left; initialTop = rect.top;
+                        btn.style.transition = 'none';
                         e.preventDefault();
                     };
                     
                     window.addEventListener('mousemove', (e) => {
                         if (!isDragging) return;
-                        
                         let newLeft = initialLeft + (e.clientX - startX);
                         let newTop = initialTop + (e.clientY - startY);
-                        
-                        newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - btn.offsetWidth));
-                        newTop = Math.max(0, Math.min(newTop, window.innerHeight - btn.offsetHeight));
-                        
                         btn.style.left = newLeft + 'px';
                         btn.style.top = newTop + 'px';
-                        btn.style.right = 'auto'; 
-                        
+                        btn.style.right = 'auto';
                         window._claw_btn_pos = { left: btn.style.left, top: btn.style.top };
                     });
                     
-                    window.addEventListener('mouseup', () => {
-                        if (isDragging) {
-                            isDragging = false;
-                            btn.style.transition = 'background 0.2s, transform 0.2s'; 
-                        }
-                    });
+                    window.addEventListener('mouseup', () => { isDragging = false; btn.style.transition = 'background 0.2s, transform 0.2s'; });
                     
                     btn.onclick = (e) => {
-                        const moveDistX = Math.abs(e.clientX - clickStartX);
-                        const moveDistY = Math.abs(e.clientY - clickStartY);
-                        if (moveDistX > 5 || moveDistY > 5) return;
-                        
-                        window._fetch_login_done = true;
-                        btn.innerHTML = '⏳ 正在保存状态...';
+                        window._fetch_interactive_done = true;
+                        btn.innerHTML = '⏳ 正在同步状态...';
                         btn.style.background = '#FF9800';
-                        btn.style.cursor = 'wait';
                     };
                     
-                    if (document.documentElement) {
-                        document.documentElement.appendChild(btn);
-                    }
+                    if (document.documentElement) document.documentElement.appendChild(btn);
                 };
                 
                 document.addEventListener('DOMContentLoaded', injectBtn);
@@ -237,18 +199,18 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
             
         page = await context.new_page()
         
+        # 应用 Stealth 防止被检测为机器人
         if playwright_stealth:
             try:
                 s_func = getattr(playwright_stealth, 'stealth_async', None) or getattr(playwright_stealth, 'stealth', None)
-                if s_func and not callable(s_func):
-                    s_func = getattr(s_func, 'stealth_async', None) or getattr(s_func, 'stealth', None)
-                if s_func and callable(s_func):
-                    stealth_result = s_func(page)
-                    if asyncio.iscoroutine(stealth_result): await stealth_result
+                if s_func:
+                    res = s_func(page)
+                    if asyncio.iscoroutine(res): await res
             except Exception: pass
         
+        # 资源拦截逻辑 (非干预模式下拦截多媒体节省流量/时间)
         async def route_intercept(route):
-            if not is_login_mode and route.request.resource_type in ["image", "media", "font", "stylesheet"]:
+            if not is_interactive and route.request.resource_type in ["image", "media", "font"]:
                 await route.abort()
             else:
                 await route.continue_()
@@ -258,63 +220,54 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
             except Exception:
-                print(f"[*] ⚠️ 初始加载超时，尝试强行读取当前已渲染内容...", file=sys.stderr)
+                print(f"[*] ⚠️ 页面加载较慢，尝试处理已加载的部分...", file=sys.stderr)
             
-            # 等待页面渲染（动态内容需要更长时间）
             await asyncio.sleep(wait)
             
-            if is_login_mode:
+            if is_interactive:
                 print(f"\n{'='*60}", file=sys.stderr)
-                print(f"[*] 🛑 进入无时限手动操作模式！", file=sys.stderr)
-                print(f"[*] 1. 请在弹出的浏览器中自由完成【账号登录】或【过验证码】", file=sys.stderr)
-                print(f"[*] 2. 无论页面跳转多少次，完成操作后，点击页面上的", file=sys.stderr)
-                print(f"[*]    【✅ 登录/验证完成，点击继续】 绿色按钮即可。", file=sys.stderr)
-                print(f"[*] 💡 提示：按住该按钮可任意拖拽，避免遮挡网页内容。", file=sys.stderr)
+                print(f"[*] 🛠️ 进入【人工干预模式】！", file=sys.stderr)
+                print(f"[*] 1. 请在弹出的窗口中自由操作（登录、过验证、点击等）", file=sys.stderr)
+                print(f"[*] 2. 完成后，点击页面右上角绿色按钮即可继续", file=sys.stderr)
                 print(f"{'='*60}\n", file=sys.stderr)
-                
-                await page.wait_for_function("window._fetch_login_done === true", timeout=0)
-                print("[*] 🖱️ 检测到按钮点击，正在保存登录凭证...", file=sys.stderr)
+                await page.wait_for_function("window._fetch_interactive_done === true", timeout=0)
                 await asyncio.sleep(1)
             else:
                 try:
                     await page.wait_for_load_state("networkidle", timeout=3000)
-                except:
-                    pass
+                except: pass
                 
+                # Cloudflare 检测与自动等待
                 content = await page.content()
                 if any(cf_kw in content for cf_kw in ["cf-browser-verification", "Just a moment...", "cloudflare"]):
-                    print("[*] 🛡️ 触发防爬质询，尝试自动绕过...", file=sys.stderr)
-                    try: 
-                        await page.wait_for_selector('body:not(.no-js)', timeout=10000)
-                    except: 
-                        await asyncio.sleep(4)
+                    print("[*] 🛡️ 触发防爬质询，尝试自动等待绕过...", file=sys.stderr)
+                    await asyncio.sleep(5)
                 
-                # 滚动页面触发懒加载（多次滚动确保内容加载完成）
-                for i in range(3):
+                # 多次滚动触发懒加载
+                for i in range(2):
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     await asyncio.sleep(1)
-                await page.evaluate("window.scrollTo(0, 0)")
 
             if session_file:
                 await context.storage_state(path=session_file)
-                print(f"[*] 💾 登录状态/会话已成功保存至: {session_file}", file=sys.stderr)
+                print(f"[*] 💾 状态已更新至: {os.path.basename(session_file)}", file=sys.stderr)
             
             return await page.content()
         finally:
             await browser.close()
 
-async def fetch_target(url: str, engine: str, proxy: str, retries: int, session_file: str, is_login_mode: bool, wait: int = 3):
-    """调度器入口"""
+async def fetch_target(url: str, engine: str, proxy: str, retries: int, session_file: str, is_interactive: bool, wait: int = 3, timeout: int = 30):
+    """引擎调度中心"""
     last_err = ""
     for attempt in range(retries):
         try:
             if engine == 'playwright':
-                return await fetch_with_playwright(url, proxy, session_file=session_file, is_login_mode=is_login_mode, wait=wait)
+                return await fetch_with_playwright(url, proxy, timeout, session_file, is_interactive, wait)
             else:
-                return await fetch_with_curl_cffi(url, proxy, session_file=session_file)
+                return await fetch_with_curl_cffi(url, proxy, session_file)
         except Exception as e:
             last_err = str(e)
-            print(f"[*] ❌ 引擎 {engine} 请求失败 (尝试 {attempt+1}/{retries}): {last_err}", file=sys.stderr)
+            print(f"[*] ❌ 引擎 {engine} 失败 (尝试 {attempt+1}/{retries}): {last_err}", file=sys.stderr)
             await asyncio.sleep(1)
             
-    return json.dumps({"error": f"请求失败. 最终错误: {last_err}"}, ensure_ascii=False)
+    return json.dumps({"error": f"抓取失败. 最终错误: {last_err}"})
