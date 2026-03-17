@@ -55,6 +55,14 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
         response = await session.get(url)
         response.raise_for_status()
         
+        # 根据 content-type 判断返回内容
+        content_type = response.headers.get("content-type", "").split(";")[0].strip()
+        if content_type.startswith("text/") or content_type in ("application/json", "application/xml", "application/javascript"):
+            content = response.text
+        else:
+            # 二进制内容（PDF、图片等）
+            content = response.content if hasattr(response, 'content') else response.text.encode() if isinstance(response.text, str) else response.text
+        
         # 将 CFFI 产生的新 Cookie 规范化并合并回 Playwright 格式
         if session_file:
             try:
@@ -99,9 +107,9 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
             except Exception as e:
                 print(f"[!] 保存 Cookie 状态失败: {e}", file=sys.stderr)
                 
-        return response.text
+        return content, response.headers.get("content-type", "text/html")
 
-async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, session_file: str = None, is_interactive: bool = False, wait: int = 3) -> str:
+async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, session_file: str = None, is_interactive: bool = False, wait: int = 3) -> tuple:
     """Playwright 引擎：全真浏览器，支持人工干预交互与原生会话持久化"""
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -252,7 +260,9 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                 await context.storage_state(path=session_file)
                 print(f"[*] 💾 状态已更新至: {os.path.basename(session_file)}", file=sys.stderr)
             
-            return await page.content()
+            content = await page.content()
+            content_type = await page.evaluate("() => document.contentType || 'text/html'")
+            return content, content_type
         finally:
             await browser.close()
 
@@ -270,4 +280,4 @@ async def fetch_target(url: str, engine: str, proxy: str, retries: int, session_
             print(f"[*] ❌ 引擎 {engine} 失败 (尝试 {attempt+1}/{retries}): {last_err}", file=sys.stderr)
             await asyncio.sleep(1)
             
-    return json.dumps({"error": f"抓取失败. 最终错误: {last_err}"})
+    return json.dumps({"error": f"抓取失败. 最终错误: {last_err}"}), "text/html"

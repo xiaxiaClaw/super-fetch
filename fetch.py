@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--max-chars", "-m", type=int, default=50000, help="最大输出字符数")
     parser.add_argument("--proxy", "-p", help="代理设置 (如 http://127.0.0.1:7890)")
     parser.add_argument("--retries", "-r", type=int, default=2, help="失败重试次数")
+    parser.add_argument("--output", "-o", help="输出文件路径（二进制内容将自动保存为此文件）")
     
     args = parser.parse_args()
     
@@ -47,7 +48,7 @@ def main():
     
     # 1. 执行网络抓取
     try:
-        html = asyncio.run(fetch_target(
+        result = asyncio.run(fetch_target(
             args.url, 
             args.engine, 
             args.proxy, 
@@ -57,9 +58,40 @@ def main():
             args.wait,
             30  # timeout
         ))
+        # 解包返回值：支持 tuple (content, content_type) 或旧版 string
+        if isinstance(result, tuple):
+            html, content_type = result
+        else:
+            html = result
+            content_type = "text/html"
     except Exception as e:
         print(json.dumps({"error": f"系统发生未捕获异常: {str(e)}"}, ensure_ascii=False))
         sys.exit(1)
+    
+    # 检查是否是二进制内容
+    if content_type:
+        # 判断是否为二进制类型
+        binary_types = (
+            "application/pdf", "application/zip", "application/octet-stream",
+            "application/msword", "application/vnd.openxmlformats",
+            "image/", "audio/", "video/", "application/x-rar",
+            "application/x-7z", "application/gzip", "application/tar"
+        )
+        is_binary = any(content_type.startswith(bt) for bt in binary_types)
+        
+        if is_binary and args.output:
+            # 保存二进制文件
+            try:
+                # Playwright 返回的是字符串（HTML），CFFI 可能返回二进制
+                # 如果是字符串编码问题，需要处理
+                with open(args.output, 'wb' if isinstance(html, bytes) else 'w', encoding=None if isinstance(html, bytes) else 'utf-8') as f:
+                    f.write(html)
+                print(f"[*] ✅ 二进制内容已保存: {args.output}", file=sys.stderr)
+                print(f"[*] 📎 Content-Type: {content_type}", file=sys.stderr)
+                sys.exit(0)
+            except Exception as e:
+                print(json.dumps({"error": f"保存文件失败: {str(e)}"}, ensure_ascii=False))
+                sys.exit(1)
     
     if html.startswith('{"error"'):
         print(html)
