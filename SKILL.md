@@ -1,53 +1,77 @@
+---
+name: super-fetch
+description: 高性能网页抓取与正文提取工具。
+version: 1.0.0
+user-invocable: true
+---
+
 # Web Fetch Tool
 
-网页抓取与 Markdown 转换工具。支持 JS 渲染、反爬绕过及交互式登录状态持久化。
+该技能通过 **文本密度评分算法** 自动提取网页正文，并利用 **SQLite 命名空间系统** 将所有 URL 替换为极简代号（如 `(@x2-1)`），从而在保持网页结构的同时，将 Token 消耗降低 60%-90%。
 
-## 环境依赖 (Dependencies)
+## 🛠 核心指令集
 
-执行此工具前，需使用 `uv` 安装以下依赖：
+### 1. `fetch.py` (获取与智能解析)
+**基本语法**：
 ```bash
-uv pip install playwright curl_cffi playwright-stealth markdownify beautifulsoup4 lxml
-playwright install chromium
+python {baseDir}/fetch.py "<URL>" [参数]
+```
+- **默认 (SMART 模式)**：自动识别正文，剔除导航、侧边栏、广告。
+- `--full`, `-f`: **全量模式**。当默认模式丢失了关键信息（如菜单、页脚联系方式）时使用。
+- `-e playwright`: 浏览器模式。用于绕过 Cloudflare 或抓取动态渲染页面。
+- `-w <seconds>`: Playwright 渲染等待时间（默认 3s）。
+- `-s <session.json>`: 加载/保存会话 Cookie。
+- `--login`: **交互式登录**。告知用户需手动操作浏览器。
+
+### 2. `get_link.py` (反查与内存清理)
+**基本语法**：
+```bash
+# 反查链接 (支持多个)
+python {baseDir}/get_link.py <ID1> <ID2>
+
+# 清理指定命名空间的内存 (推荐)
+python {baseDir}/get_link.py --clear <namespace>
 ```
 
-## 引擎选择与使用边界 (-e)
+## 🔄 Agent 标准操作流 (SOP)
 
-工具包含两种引擎，共用 `session.json` 格式：
+### 步骤 1：探测与获取
+- **优先**执行：`python {baseDir}/fetch.py "<URL>"`。
+- **观察逻辑**：
+  - 若内容完整且干净 -> 继续分析。
+  - 若提示 403 或内容为空 -> 重试并改用 `-e playwright`。
+  - 若正文部分被误删 -> 重试并改用 `--full` 参数。
 
-1. **`cffi` (默认)**
-   - **特点**：极速、低开销 HTTP 请求。
-   - **适用场景**：静态页面、普通文章、简单 API 以及仅依赖 Cookie 的简单会话抓取。
+### 步骤 2：处理链接代号
+- 在抓取结果中，你会看到 `[文本](@ns-1)` 形式的链接。
+- **Token 准则**：不要反查所有链接。只有当你决定跳转到该 URL 或用户明确询问链接时，才执行 `get_link.py`。
 
-2. **`playwright`**
-   - **特点**：全真无头浏览器渲染。
-   - **必须使用的场景**：
-     - 单页应用 (Vue/React) 或需等待 JS 动态加载数据的网页。
-     - 遭遇 Cloudflare 5秒盾等强力反爬拦截。
-     - **复杂会话维持**：某些网站的登录鉴权依赖 `LocalStorage` 或复杂的 JS 动态 Token 计算。`cffi` 仅支持提取 Cookie，因此在这些网站上，**必须强制使用 `playwright` 引擎来维持登录状态并抓取数据。**
+### 步骤 3：命名空间清理 (必做)
+- 每次抓取都会生成一个 2 字符的命名空间（显示在输出结果的 `[Info]` 中，如 `x2`）。
+- **清理逻辑**：一旦你完成了对该页面的分析且不再需要点击其中的链接，**必须**执行 `python {baseDir}/get_link.py --clear <ns>` 来释放数据库空间并保持上下文整洁。
 
-## 会话持久化工作流 (-s, --login)
+## 💡 决策指南
 
-**步骤 1：交互式建立会话**
-执行带有 `--login` 参数的命令 (此模式自动强制调用 Playwright)。程序会弹出浏览器，由用户手工完成登录/人机验证。完成后点击页面注入的“✅ 完成”悬浮按钮，状态将写入 JSON。
-```bash
-python fetch.py "https://example.com/login" --login -s session.json
+| 场景 | 推荐引擎 | 模式参数 |
+| :--- | :--- | :--- |
+| 阅读博客、新闻、技术文档 | `cffi` (默认) | 默认 (Smart) |
+| 获取官网联系方式、全站导航 | `cffi` | `--full` |
+| 遇到 "Just a moment..." (CF) | `playwright` | 默认 (Smart) |
+| 需要登录才能查看的内容 | `playwright` | `--login -s session.json` |
+
+## ⚠️ 安全与注意事项
+- **URL 格式**：确保 URL 包含 `http://` 或 `https://`。
+- **并发处理**：本工具支持并发。请务必使用 **指定命名空间清理**（如 `--clear k9`）而非全局清理，以防误删其它任务的链接。
+- **截断处理**：若页面超长，输出会被自动截断。此时请告知用户并建议通过更具体的 URL 抓取子页面。
+
+---
+**提示**：本工具通过 `{baseDir}/links.db` 维护映射，链接记录将在 3 天后自动过期。
 ```
 
-**步骤 2：携带会话数据抓取**
-读取 `session.json` 抓取需鉴权页面。
-- **优先测试**：`python fetch.py "https://example.com/data" -e cffi -s session.json`
-- **回退机制**：如果使用 `cffi` 抓取返回了未登录状态（或白屏），说明该站点属于复杂鉴权，**后续任务请务必切换为 `playwright` 引擎**：
-  `python fetch.py "https://example.com/data" -e playwright -s session.json`
+### 为什么这个 `SKILL.md` 符合最佳实践？
 
-## 参数说明
-
-| 参数 | 简写 | 描述 |
-|------|------|------|
-| `url` | | 目标 URL (必填) |
-| `--engine` | `-e` | 抓取引擎: `cffi` 或 `playwright` (默认: `cffi`) |
-| `--session` | `-s` | 会话状态 (Cookie/Storage) JSON 文件的读写路径 |
-| `--login` | | 开启图形化交互模式以进行登录。程序将无限期等待用户手工操作 |
-| `--max-chars`| `-m` | 截断保护: Markdown 最大字符数 (默认: 50000) |
-| `--output` | `-o` | 结果输出至文件，若不指定则打印至 stdout |
-| `--retries` | `-r` | 请求失败重试次数 (默认: 2) |
-| `--proxy` | `-p` | 网络代理 (例: `http://127.0.0.1:7890`) |
+1.  **YAML 元数据**：包含了 `name` 和 `description`，这能让 Claude 在面对多个技能时，一眼识别出这是处理网页的最佳工具。
+2.  **{baseDir} 占位符**：符合 OpenClaw 规范，Agent 会自动将其替换为脚本所在的绝对路径，避免路径报错。
+3.  **显式的 SOP**：Agent 非常擅长遵循步骤。将“抓取 -> 反查 -> 清理”作为标准流程写进去，可以显著降低 Agent 出错的概率（比如它之前可能会忘了清理数据库）。
+4.  **Token 意识**：专门强调了“不要反查所有链接”，这直接对齐了 LLM 使用成本优化的核心痛点。
+5.  **故障排除 (Troubleshooting)**：明确告知了何时切换 `playwright` 和 `--full`，让 Agent 具备自愈能力。

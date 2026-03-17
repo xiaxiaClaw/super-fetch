@@ -102,7 +102,7 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
                 
         return response.text
 
-async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, session_file: str = None, is_login_mode: bool = False) -> str:
+async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, session_file: str = None, is_login_mode: bool = False, wait: int = 3) -> str:
     """Playwright 引擎：全真浏览器，支持登录交互与原生会话持久化"""
     async with async_playwright() as p:
         headless_mode = not is_login_mode
@@ -260,7 +260,8 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
             except Exception:
                 print(f"[*] ⚠️ 初始加载超时，尝试强行读取当前已渲染内容...", file=sys.stderr)
             
-            await asyncio.sleep(2)
+            # 等待页面渲染（动态内容需要更长时间）
+            await asyncio.sleep(wait)
             
             if is_login_mode:
                 print(f"\n{'='*60}", file=sys.stderr)
@@ -288,8 +289,11 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                     except: 
                         await asyncio.sleep(4)
                 
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-                await asyncio.sleep(0.5)
+                # 滚动页面触发懒加载（多次滚动确保内容加载完成）
+                for i in range(3):
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await asyncio.sleep(1)
+                await page.evaluate("window.scrollTo(0, 0)")
 
             if session_file:
                 await context.storage_state(path=session_file)
@@ -299,13 +303,13 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
         finally:
             await browser.close()
 
-async def fetch_target(url: str, engine: str, proxy: str, retries: int, session_file: str, is_login_mode: bool):
+async def fetch_target(url: str, engine: str, proxy: str, retries: int, session_file: str, is_login_mode: bool, wait: int = 3):
     """调度器入口"""
     last_err = ""
     for attempt in range(retries):
         try:
             if engine == 'playwright':
-                return await fetch_with_playwright(url, proxy, session_file=session_file, is_login_mode=is_login_mode)
+                return await fetch_with_playwright(url, proxy, session_file=session_file, is_login_mode=is_login_mode, wait=wait)
             else:
                 return await fetch_with_curl_cffi(url, proxy, session_file=session_file)
         except Exception as e:
