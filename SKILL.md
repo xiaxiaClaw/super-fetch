@@ -30,6 +30,11 @@ python ~/.openclaw/skills/super-fetch/fetch.py "<URL>" [参数]
 - `-e playwright`: **浏览器模式**。绕过强力反爬或加载动态渲染内容。
 - `-i, --interactive`: **人工干预模式**。弹出浏览器窗口处理验证码、滑块或手动登录。执行此模式时强制使用 playwright 引擎。
 - `-s, --session`: **会话文件**。默认自动使用同目录下的 `session.json`。
+- `-o, --output`: **下载文件**。当目标 URL 返回二进制内容（PDF、图片、视频等）时，保存为指定文件路径。
+- `-w, --wait`: **渲染等待**。Playwright 额外等待秒数（默认 3 秒）。
+- `-m, --max-chars`: **最大字符数**。输出内容上限（默认 50000）。
+- `-p, --proxy`: **代理设置**。如 `http://127.0.0.1:7890`。
+- `-r, --retries`: **重试次数**。失败重试次数（默认 2）。
 
 ### 2. `get_link.py` (反查与内存管理)
 **功能**：解析代号（如 `@x1-5`）或清理数据库空间。
@@ -40,6 +45,25 @@ python ~/.openclaw/skills/super-fetch/get_link.py <ID1> <ID2>
 # 精准清理指定命名空间 (推荐，任务结束必做)
 python ~/.openclaw/skills/super-fetch/get_link.py --clear <namespace>
 ```
+
+---
+
+## 📥 下载二进制文件
+
+当需要下载 PDF、图片、视频等二进制文件时，使用 `-o/--output` 参数：
+
+```bash
+# 下载 PDF 论文
+python ~/.openclaw/skills/super-fetch/fetch.py "https://arxiv.org/pdf/2509.19088.pdf" -o paper.pdf
+
+# 下载图片
+python ~/.openclaw/skills/super-fetch/fetch.py "https://picsum.photos/800/600" -o image.jpg
+
+# 下载视频
+python ~/.openclaw/skills/super-fetch/fetch.py "https://example.com/video.mp4" -o video.mp4
+```
+
+**支持的类型**：PDF、DOCX、XLSX、图片(jpg/png/gif)、视频(mp4/webm)、音频(mp3/wav)、压缩包(zip/rar/7z) 等。
 
 ---
 
