@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import asyncio
+from urllib.parse import urlparse
 from curl_cffi.requests import AsyncSession
 from playwright.async_api import async_playwright
 
@@ -18,27 +19,86 @@ REAL_HEADERS = {
 }
 
 async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, session_file: str = None) -> str:
-    """CFFI 引擎：极速请求，支持 Cookie 持久化"""
+    """CFFI 引擎：极速请求，现已全面兼容 Playwright Session 格式，支持双引擎状态互通"""
     proxies = {"http": proxy, "https": proxy} if proxy else None
     
-    saved_cookies = {}
+    # 统一使用 Playwright 兼容的 state 结构
+    pw_state = {"cookies": [], "origins": []}
+    cffi_cookies = {} # 提取给 CFFI 用的扁平字典
+    
     if session_file and os.path.exists(session_file):
         try:
             with open(session_file, 'r', encoding='utf-8') as f:
-                saved_cookies = json.load(f)
-            print(f"[*] 🍪 成功加载 CFFI Cookie: {session_file}", file=sys.stderr)
-        except Exception: pass
+                data = json.load(f)
+                
+            if "cookies" in data:
+                # 1. 发现 Playwright 标准格式
+                pw_state = data
+                for c in data["cookies"]:
+                    cffi_cookies[c["name"]] = c["value"]
+                print(f"[*] 🍪 成功加载与 Playwright 兼容的 Session: {session_file}", file=sys.stderr)
+            else:
+                # 2. 兼容旧版 CFFI 扁平字典格式，并在后续自动升级为新格式
+                cffi_cookies = data
+                target_domain = urlparse(url).netloc
+                for k, v in data.items():
+                    pw_state["cookies"].append({
+                        "name": k, "value": v, "domain": target_domain,
+                        "path": "/", "expires": -1, "httpOnly": False,
+                        "secure": False, "sameSite": "Lax"
+                    })
+                print(f"[*] 🍪 成功加载旧版 CFFI Session (将自动升级格式): {session_file}", file=sys.stderr)
+        except Exception as e:
+            print(f"[!] 读取 Session 文件失败: {e}", file=sys.stderr)
 
-    async with AsyncSession(impersonate="chrome120", proxies=proxies, timeout=timeout, headers=REAL_HEADERS, cookies=saved_cookies) as session:
+    async with AsyncSession(impersonate="chrome120", proxies=proxies, timeout=timeout, headers=REAL_HEADERS, cookies=cffi_cookies) as session:
         response = await session.get(url)
         response.raise_for_status()
         
+        # 将 CFFI 产生的新 Cookie 规范化并合并回 Playwright 格式
         if session_file:
             try:
+                new_cookies_map = {}
+                target_domain = urlparse(url).netloc
+                
+                # 尝试从 cookiejar 提取完整属性，如果版本不支持则退化为字典提取
+                if hasattr(session.cookies, 'jar'):
+                    for cookie in session.cookies.jar:
+                        new_cookies_map[(cookie.name, cookie.domain)] = {
+                            "name": cookie.name,
+                            "value": cookie.value,
+                            "domain": cookie.domain or target_domain,
+                            "path": cookie.path or "/",
+                            "expires": cookie.expires if cookie.expires else -1,
+                            "httpOnly": cookie.has_nonstandard_attr('httponly') or cookie.has_nonstandard_attr('HttpOnly') or False,
+                            "secure": cookie.secure,
+                            "sameSite": "Lax"
+                        }
+                else:
+                    for k, v in session.cookies.get_dict().items():
+                        new_cookies_map[(k, target_domain)] = {
+                            "name": k, "value": v, "domain": target_domain,
+                            "path": "/", "expires": -1, "httpOnly": False,
+                            "secure": False, "sameSite": "Lax"
+                        }
+
+                # 与原有的 Playwright cookies 进行合并（更新存在的，保留其他的）
+                merged_cookies = []
+                for old_c in pw_state["cookies"]:
+                    key = (old_c["name"], old_c.get("domain", target_domain))
+                    if key in new_cookies_map:
+                        merged_cookies.append(new_cookies_map.pop(key))
+                    else:
+                        merged_cookies.append(old_c)
+                        
+                # 追加新增的 cookies
+                merged_cookies.extend(new_cookies_map.values())
+                pw_state["cookies"] = merged_cookies
+
                 with open(session_file, 'w', encoding='utf-8') as f:
-                    json.dump(session.cookies.get_dict(), f)
+                    json.dump(pw_state, f, indent=2)
             except Exception as e:
-                print(f"[!] 保存 CFFI Cookie 失败: {e}", file=sys.stderr)
+                print(f"[!] 保存 CFFI Session 失败: {e}", file=sys.stderr)
                 
         return response.text
 
@@ -60,8 +120,14 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
         
         if session_file and os.path.exists(session_file):
             try:
-                context_args["storage_state"] = session_file
-                print(f"[*] 🎫 成功注入 Playwright 登录状态: {session_file}", file=sys.stderr)
+                # 兼容性修复：如果遇到之前 CFFI 创建的旧版纯字典格式，Playwright 加载会崩溃，直接拦截跳过
+                with open(session_file, 'r', encoding='utf-8') as f:
+                    check_data = json.load(f)
+                if "cookies" not in check_data:
+                    print(f"[!] 警告: 检测到不兼容的旧版 CFFI Cookie 格式，将以新会话启动以避免崩溃。", file=sys.stderr)
+                else:
+                    context_args["storage_state"] = session_file
+                    print(f"[*] 🎫 成功注入 Playwright 登录状态: {session_file}", file=sys.stderr)
             except Exception as e:
                 print(f"[!] 读取状态文件失败，将以新会话启动: {e}", file=sys.stderr)
                 
@@ -93,10 +159,10 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                     btn.style.fontWeight = 'bold';
                     btn.style.cursor = 'move';
                     btn.style.boxShadow = '0 4px 15px rgba(0,0,0,0.4)';
-                    btn.style.userSelect = 'none'; // 防止拖拽时选中文本
+                    btn.style.userSelect = 'none'; 
                     btn.style.transition = 'background 0.2s, transform 0.2s';
                     
-                    // 恢复上次拖拽的位置，或者使用默认位置
+                    // 恢复上次拖拽的位置
                     if (window._claw_btn_pos) {
                         btn.style.left = window._claw_btn_pos.left;
                         btn.style.top = window._claw_btn_pos.top;
@@ -105,7 +171,6 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                         btn.style.right = '20px';
                     }
                     
-                    // --- 拖拽逻辑实现 ---
                     let isDragging = false;
                     let startX, startY, initialLeft, initialTop;
                     let clickStartX, clickStartY;
@@ -121,7 +186,7 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                         initialLeft = rect.left;
                         initialTop = rect.top;
                         
-                        btn.style.transition = 'none'; // 拖拽时取消动画，保证丝滑
+                        btn.style.transition = 'none'; 
                         e.preventDefault();
                     };
                     
@@ -131,15 +196,13 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                         let newLeft = initialLeft + (e.clientX - startX);
                         let newTop = initialTop + (e.clientY - startY);
                         
-                        // 边缘碰撞检测 (防止拖出屏幕外)
                         newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - btn.offsetWidth));
                         newTop = Math.max(0, Math.min(newTop, window.innerHeight - btn.offsetHeight));
                         
                         btn.style.left = newLeft + 'px';
                         btn.style.top = newTop + 'px';
-                        btn.style.right = 'auto'; // 清除 right 属性，交由 left 接管
+                        btn.style.right = 'auto'; 
                         
-                        // 记录位置，防止 SPA 路由跳转后复位
                         window._claw_btn_pos = { left: btn.style.left, top: btn.style.top };
                     });
                     
@@ -150,14 +213,10 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                         }
                     });
                     
-                    // --- 点击判定逻辑 ---
                     btn.onclick = (e) => {
-                        // 如果鼠标移动距离大于 5px，判定为拖拽，不触发点击事件
                         const moveDistX = Math.abs(e.clientX - clickStartX);
                         const moveDistY = Math.abs(e.clientY - clickStartY);
-                        if (moveDistX > 5 || moveDistY > 5) {
-                            return;
-                        }
+                        if (moveDistX > 5 || moveDistY > 5) return;
                         
                         window._fetch_login_done = true;
                         btn.innerHTML = '⏳ 正在保存状态...';

@@ -1,89 +1,53 @@
-# Web Fetch Tool (SPEED PRO V9)
+# Web Fetch Tool
 
-一款为 LLM 和 AI Agent 量身打造的现代网页抓取工具。支持强力反爬穿透、会话状态持久化（保持登录）、可视化人机交互验证，并能将复杂的网页精准转换为所见即所得的极简 Markdown。
+网页抓取与 Markdown 转换工具。支持 JS 渲染、反爬绕过及交互式登录状态持久化。
 
-## 🌟 核心突破与功能
+## 环境依赖 (Dependencies)
 
-1. **优雅的无限制交互登录 (New!)**
-   - **告别倒计时**：使用 `--login` 模式时，程序会在网页右上角自动注入一个**绿色的悬浮按钮**。你有**无限的时间**去输入账号密码、接手机验证码或拖拽滑块。
-   - **跨路由防丢**：无论单页应用（Vue/React）如何跳转、重定向，悬浮按钮始终存在。操作完成后点击按钮，程序自动接管并保存凭证。
-   - **凭证漫游**：支持在本地带界面的电脑上生成 `session.json`，直接传给无界面的远程 Linux 服务器静默使用（无缝对接云端 AI Agent）。
-
-2. **双引擎与智能防超时 (New!)**
-   - **`cffi` 引擎**：基于底层 TLS 握手伪装（默认），极速轻量，适合绝大部分常规 API 或静态页面。
-   - **`playwright` 引擎**：全真 Chromium 渲染。**新版加入了智能 DOM 放行机制**，即使遇到知乎、微博等充满无限追踪脚本的网站，也能在 HTML 骨架加载完毕后瞬间抓取，彻底告别 30 秒超时假死。
-
-3. **专为 LLM 优化的解析器**
-   - **所见即所得**：完美保留页面层级和所有的超链接 `[文本](链接)`。
-   - **防样式穿透**：物理级抹除隐藏在 `<!-- -->`、`<template>`、`<textarea>` 中的恶意 CSS/JS 代码，告别乱码。
-   - **Token 极限压缩**：自动将同域名的绝对路径转换为相对路径（如 `https://a.com/b` -> `/b`），大幅节省模型上下文 Token。
-
-## 📦 安装依赖
-
-建议使用 `uv` 创建独立虚拟环境进行管理：
-
+执行此工具前，需使用 `uv` 安装以下依赖：
 ```bash
-# 1. 创建并激活虚拟环境
-uv venv ~/fetch-venv
-source ~/fetch-venv/bin/activate
-
-# 2. 安装 Python 依赖
 uv pip install playwright curl_cffi playwright-stealth markdownify beautifulsoup4 lxml
-
-# 3. 安装 Playwright 内置浏览器
 playwright install chromium
 ```
 
-## 🚀 使用方法
+## 引擎选择与使用边界 (-e)
 
-### 1. 基础极速抓取 (默认 CFFI)
-适合绝大部分普通页面、新闻、博客等。
+工具包含两种引擎，共用 `session.json` 格式：
+
+1. **`cffi` (默认)**
+   - **特点**：极速、低开销 HTTP 请求。
+   - **适用场景**：静态页面、普通文章、简单 API 以及仅依赖 Cookie 的简单会话抓取。
+
+2. **`playwright`**
+   - **特点**：全真无头浏览器渲染。
+   - **必须使用的场景**：
+     - 单页应用 (Vue/React) 或需等待 JS 动态加载数据的网页。
+     - 遭遇 Cloudflare 5秒盾等强力反爬拦截。
+     - **复杂会话维持**：某些网站的登录鉴权依赖 `LocalStorage` 或复杂的 JS 动态 Token 计算。`cffi` 仅支持提取 Cookie，因此在这些网站上，**必须强制使用 `playwright` 引擎来维持登录状态并抓取数据。**
+
+## 会话持久化工作流 (-s, --login)
+
+**步骤 1：交互式建立会话**
+执行带有 `--login` 参数的命令 (此模式自动强制调用 Playwright)。程序会弹出浏览器，由用户手工完成登录/人机验证。完成后点击页面注入的“✅ 完成”悬浮按钮，状态将写入 JSON。
 ```bash
-python ~/.openclaw/skills/web-fetch-tool/fetch.py "https://example.com"
+python fetch.py "https://example.com/login" --login -s session.json
 ```
 
-### 2. 强力渲染模式 (Playwright)
-当遇到 Cloudflare 质询、白屏、需要等待 JS 加载数据的复杂页面时使用。
-```bash
-python ~/.openclaw/skills/web-fetch-tool/fetch.py "https://www.baidu.com" -e playwright
-```
+**步骤 2：携带会话数据抓取**
+读取 `session.json` 抓取需鉴权页面。
+- **优先测试**：`python fetch.py "https://example.com/data" -e cffi -s session.json`
+- **回退机制**：如果使用 `cffi` 抓取返回了未登录状态（或白屏），说明该站点属于复杂鉴权，**后续任务请务必切换为 `playwright` 引擎**：
+  `python fetch.py "https://example.com/data" -e playwright -s session.json`
 
-### 3. 🔐 需要登录的网站抓取 (核心进阶)
+## 参数说明
 
-如果你需要抓取 Twitter、知乎推荐流、Github 私有仓库等需要登录的页面，请按以下两步操作：
-
-**第一步：交互式建立会话（只需执行一次）**
-使用 `--login` 参数。此时电脑会**弹出一个真实的浏览器窗口**。
-请在浏览器中自由操作，无论耗时多久、跳转多少次，只要确认登录成功，点击页面右上角的**【✅ 登录/验证完成，点击继续】**绿色按钮即可。程序会自动将凭证保存到指定的 json 文件中。
-```bash
-python ~/.openclaw/skills/web-fetch-tool/fetch.py "https://github.com/login" -e playwright --login -s github_session.json
-```
-
-**第二步：携带状态静默抓取（可无限次执行）**
-以后抓取该网站任何页面，只需带上 `-s` 参数，程序将在后台无头静默秒抓。
-```bash
-python ~/.openclaw/skills/web-fetch-tool/fetch.py "https://github.com/settings/profile" -e playwright -s github_session.json
-```
-
-> **💡 远程服务器(Headless) 最佳实践：**
-> 如果你的脚本运行在纯命令行的 Linux 服务器上，无法弹出浏览器窗口。你可以**在本地个人电脑（Windows/Mac）上执行第一步**，生成 `session.json` 后，通过 `scp` 等工具传到服务器上，服务器直接执行第二步即可完美运行！
-
-## ⚙️ 参数字典
-
-| 参数 | 简写 | 说明 | 默认值 |
-|------|------|--------|--------|
-| `url` | 无 | 目标网页的 URL (必填) | 无 |
-| `--engine` | `-e` | 网络引擎选择：`cffi` 或 `playwright` | `cffi` |
-| `--session` | `-s` | **持久化文件路径**，用于加载或保存 Cookie/登录状态 | 无 |
-| `--login` | 无 | **交互登录模式**。注入悬浮按钮，无限期等待用户手工操作 | `False` |
-| `--max-chars`| `-m` | 截断保护：允许输出的最大 Markdown 字符数 | `50000` |
-| `--output` | `-o` | 将抓取结果写入到指定文件 (如 `result.md`) | `stdout` |
-| `--retries` | `-r` | 失败重试次数 | `2` |
-| `--proxy` | `-p` | 设置 HTTP/Socks5 代理 (例: `http://127.0.0.1:7890`) | 无 |
-
-## 🌐 网站兼容性参考
-
-- ✅ **极速直连 (CFFI)**：大部分资讯站。
-- ✅ **动态渲染 (Playwright)**：搜索引擎, Google, 各种基于 Vue/React 的单页应用。
-- ✅ **强反爬/验证码防护站**：知乎, 微博, 各种采用 Cloudflare 5秒盾的网站 (已优化超时免拦截)。
-- ✅ **强制登录站**：Twitter, Github, 后台管理系统 (支持多路由跳转与三方 OAuth 登录验证)。
+| 参数 | 简写 | 描述 |
+|------|------|------|
+| `url` | | 目标 URL (必填) |
+| `--engine` | `-e` | 抓取引擎: `cffi` 或 `playwright` (默认: `cffi`) |
+| `--session` | `-s` | 会话状态 (Cookie/Storage) JSON 文件的读写路径 |
+| `--login` | | 开启图形化交互模式以进行登录。程序将无限期等待用户手工操作 |
+| `--max-chars`| `-m` | 截断保护: Markdown 最大字符数 (默认: 50000) |
+| `--output` | `-o` | 结果输出至文件，若不指定则打印至 stdout |
+| `--retries` | `-r` | 请求失败重试次数 (默认: 2) |
+| `--proxy` | `-p` | 网络代理 (例: `http://127.0.0.1:7890`) |
