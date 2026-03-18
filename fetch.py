@@ -70,7 +70,6 @@ def main():
     
     # 检查是否是二进制内容
     if content_type:
-        # 判断是否为二进制类型
         binary_types = (
             "application/pdf", "application/zip", "application/octet-stream",
             "application/msword", "application/vnd.openxmlformats",
@@ -79,21 +78,25 @@ def main():
         )
         is_binary = any(content_type.startswith(bt) for bt in binary_types)
         
-        if is_binary and args.output:
-            # 保存二进制文件
-            try:
-                # Playwright 返回的是字符串（HTML），CFFI 可能返回二进制
-                # 如果是字符串编码问题，需要处理
-                with open(args.output, 'wb' if isinstance(html, bytes) else 'w', encoding=None if isinstance(html, bytes) else 'utf-8') as f:
-                    f.write(html)
-                print(f"[*] ✅ 二进制内容已保存: {args.output}", file=sys.stderr)
-                print(f"[*] 📎 Content-Type: {content_type}", file=sys.stderr)
-                sys.exit(0)
-            except Exception as e:
-                print(json.dumps({"error": f"保存文件失败: {str(e)}"}, ensure_ascii=False))
+        if is_binary:
+            if args.output:
+                # 保存二进制文件
+                try:
+                    with open(args.output, 'wb' if isinstance(html, bytes) else 'w', encoding=None if isinstance(html, bytes) else 'utf-8') as f:
+                        f.write(html)
+                    print(f"[*] ✅ 二进制内容已保存: {args.output}", file=sys.stderr)
+                    print(f"[*] 📎 Content-Type: {content_type}", file=sys.stderr)
+                    sys.exit(0)
+                except Exception as e:
+                    print(json.dumps({"error": f"保存文件失败: {str(e)}"}, ensure_ascii=False))
+                    sys.exit(1)
+            else:
+                # 【关键修复】：拦截未带 -o 参数的二进制抓取请求，防止乱码和程序崩溃
+                print(json.dumps({"error": f"检测到目标为二进制文件 ({content_type})，请务必使用 -o / --output 参数指定保存路径！"}, ensure_ascii=False))
                 sys.exit(1)
     
-    if html.startswith('{"error"'):
+    # 【关键修复】：增加类型判断，避免 html 为 bytes 时调用 startswith 抛出 TypeError
+    if isinstance(html, str) and html.startswith('{"error"'):
         print(html)
         sys.exit(1)
         

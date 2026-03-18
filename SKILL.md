@@ -1,88 +1,148 @@
 ---
 name: super-fetch
-description: 高性能网页抓取与正文提取核心引擎。支持智能噪音过滤、Token 极限压缩（链接代号化）、多格式持久化会话管理（支持 Cookie-Editor）以及人工干预模式。适用于需要规避反爬检测、处理验证码、远程授权或在长上下文中维持高效信息密度的场景。
-version: 1.0.0
+description: 高性能网页抓取与正文提取引擎。支持智能正文精简、链接代号化、Session 持久化、人工干预模式。适用于需要规避反爬、登录验证或提取结构化内容的场景。
+version: 2.0.0
 user-invocable: true
 ---
 
-# Super Fetch (Core Engine)
+# Super Fetch
 
-这是 OpenClaw 的底层抓取基座。它负责将复杂的 HTML 转化为极简、高信息密度的 Markdown，并利用 SQLite 数据库管理链接映射以极大地节省 LLM Token 上下文。
+OpenClaw 高性能网页抓取基座，将复杂 HTML 转化为极简 Markdown。
 
-## 路径与状态管理 (Path & State)
+## 核心特性
 
-Agent 应当优先使用以下预设路径：
-- **脚本目录**: `~/.openclaw/skills/super-fetch/` (或 `~/.openclaw/<workspace>/skills/super-fetch/`)
-- **链接数据库**: `~/.openclaw/skills/super-fetch/links.db` (存储有效期 3 天)
-- **默认会话文件**: `~/.openclaw/skills/super-fetch/session.json`
+- **双引擎切换**：cffi（极速）/ playwright（浏览器）
+- **智能正文提取**：自动识别主要内容，过滤噪音
+- **链接代号化**：将页面链接转为 `@k9-1` 格式，节省 Token
+- **Session 持久化**：自动保存/加载登录状态
+- **人工干预模式**：弹窗处理验证码、滑动登录
+- **二进制下载**：支持 PDF/图片等直接保存
 
-**关于凭证与登录状态 (session.json)：**
-该引擎具备**自适应凭证解析**能力，支持用户直接将以下三种格式粘贴入 `session.json` 中，系统会自动将其格式化为全引擎通用的标准状态：
-1. **Playwright 原生格式** (带 localStorage 支持，最高权限)。
-2. **Cookie-Editor 插件导出格式** (JSON 数组格式，最适合用户远程辅助登录)。
-3. **扁平字典格式** (如 `{"cookie_name": "value"}`)。
+## 文件结构
 
-## 核心指令集 (Commands)
-
-### 1. `fetch.py` (获取与解析)
-**功能**：抓取 URL、绕过反爬、清洗噪音并输出含代号的高密度 Markdown 内容。
-```bash
-python ~/.openclaw/skills/super-fetch/fetch.py "<URL>"[参数]
 ```
-**常用参数**：
-- **(默认)**: Smart 模式，自动评分提取正文，剔除导航、页脚、广告。
-- `-f, --full`: **全量模式**。当默认提取丢失了关键信息（如菜单、页脚、评论区）时使用。
-- `-e playwright`: **全真浏览器模式**。绕过强力反爬（Cloudflare）或加载动态渲染 (SPA) 内容。
-- `-i, --interactive`: **人工干预模式**。弹出无头浏览器窗口处理验证码、滑块或引导用户手动登录。（强制使用 playwright 引擎）。
-- `-o, --output <path>`: **下载文件**。当目标 URL 为二进制文件（PDF、图片、视频、压缩包等）时，直接保存到指定路径。
-- `-w, --wait <秒>`: **渲染等待**。增加 JS 渲染时间（默认 3 秒）。
-
-### 2. `get_link.py` (内存与代号管理)
-**功能**：解析页面中的链接代号（如 `@k9-1`），或清理数据库释放空间。
-```bash
-# 反查具体代号 (支持传入多个)
-python ~/.openclaw/skills/super-fetch/get_link.py @k9-1 @k9-5
-
-# 精准清理指定命名空间 (Agent 任务结束的必做步骤)
-python ~/.openclaw/skills/super-fetch/get_link.py --clear k9
+~/.openclaw/skills/super-fetch/
+├── fetch.py           # 主程序入口
+├── fetch_engines.py   # 抓取引擎（cffi/playwright）
+├── fetch_parser.py    # 内容解析与正文提取
+├── get_link.py        # 链接代号反查工具
+├── session.json       # 登录状态存储（自动管理）
+├── links.db           # 链接映射数据库
+└── SKILL.md           # 本文档
 ```
 
----
+## 快速开始
 
-## Agent 标准操作流 (SOP)
-
-为了保证高效能与低 Token 消耗，Agent 必须严格遵循以下执行步骤：
-
-### 第一步：初次抓取
-优先使用极速轻量级抓取，且不加多余参数：
 ```bash
-python fetch.py "https://example.com"
-```
-**异常与重试策略：**
-- **返回 403 / Just a moment (Cloudflare) / 抓取失败**：改用 `python fetch.py "<URL>" -e playwright`。
-- **返回内容过少 / 缺少关键导航**：改用 `python fetch.py "<URL>" --full`。
-- **遇到严格验证码或需复杂登录**：执行 `python fetch.py "<URL>" -i` 并提示用户：“已为您弹出浏览器，请手动完成验证/登录。完成后点击页面右上角绿色按钮。”
+# 基本抓取（自动选择引擎）
+python3 ~/.openclaw/skills/super-fetch/fetch.py "https://example.com"
 
-### 第二步：处理链接代号 (Token 压缩准则)
-解析返回的 Markdown 后，页面内所有链接已被替换为如 `[标题](@k9-1)` 的格式。
-- **绝对禁止**：一次性反查页面中所有的代号。
-- **正确做法**：仅当你决定深入阅读特定的条目（如某篇相关新闻、下一页按钮）时，调用 `get_link.py @k9-1` 获取真实的 URL，再对该真实 URL 发起新的 `fetch.py`。
-- **回答用户时**：除非用户明确要求提供完整 URL，否则在回答中可直接保留代号（如：“参考来源见 @a1-1”），不要做无谓的展开。
-
-### 第三步：下载二进制数据 (按需)
-如果你识别到目标是一个多媒体或文档资源（如 `.pdf`, `.mp4`），请直接使用 `-o` 参数避免控制台乱码：
-```bash
-python fetch.py "https://arxiv.org/pdf/2509.19088.pdf" -o paper.pdf
+# 使用指定引擎
+python3 ~/.openclaw/skills/super-fetch/fetch.py "https://example.com" -e cffi
+python3 ~/.openclaw/skills/super-fetch/fetch.py "https://example.com" -e playwright
 ```
 
-### 第四步：清理内存 (任务收尾)
-分析当前页面或任务流结束后，从输出结果的顶部找到 `命名空间: <ns>`（例如 `k9`），主动清理数据库：
+## 参数详解
+
+### fetch.py 主程序
+
+| 参数 | 简写 | 说明 | 默认值 |
+|------|------|------|--------|
+| `url` | - | 目标 URL（必填） | - |
+| `--engine` | `-e` | 抓取引擎：`cffi`（极速）或 `playwright`（浏览器） | `cffi` |
+| `--interactive` | `-i` | 人工干预模式，弹出浏览器窗口处理验证码/登录 | `false` |
+| `--full` | `-f` | 全量模式，保留页面全部文本，不做智能精简 | `false` |
+| `--session` | `-s` | Session 文件路径 | `./session.json` |
+| `--wait` | `-w` | Playwright 渲染等待秒数 | `3` |
+| `--max-chars` | `-m` | 输出最大字符数 | `50000` |
+| `--proxy` | `-p` | 代理地址，如 `http://127.0.0.1:7890` | - |
+| `--retries` | `-r` | 失败重试次数 | `2` |
+| `--output` | `-o` | 保存二进制文件（PDF/图片等） | - |
+
+### get_link.py 链接反查
+
 ```bash
-python get_link.py --clear k9
+# 反查单个代号
+python3 ~/.openclaw/skills/super-fetch/get_link.py @k9-1
+
+# 反查多个代号
+python3 ~/.openclaw/skills/super-fetch/get_link.py @k9-1 @k9-2 @ab-3
+
+# 清理指定命名空间（如 k9 开头的所有链接）
+python3 ~/.openclaw/skills/super-fetch/get_link.py --clear k9
+
+# 清空全部链接数据库
+python3 ~/.openclaw/skills/super-fetch/get_link.py --clear
 ```
 
-## 决策与故障排除准则 (Guidelines)
+## 使用场景
 
-1. **登录失效处理**：如果抓取结果显示“请登录”或用户态丢失，提醒用户：“由于权限限制无法查看，您可以利用 Cookie-Editor 插件导出 Cookie 并粘贴至 `session.json` 中，或者让我开启 `-i` 人工干预模式为您弹出登录窗口。”
-2. **多页面状态共享**：所有的 `fetch.py` 调用默认自动使用并更新 `session.json`。Agent 不需要显式传递 Cookie 即可在同一站点的不同子页面间维持会话。
-3. **内容截断**：默认输出上限为 50000 字符，如遇超长文本需结合 grep 或分段读取技巧进行后续处理。
+### 场景 1：简单网页抓取
+
+```bash
+python3 ~/.openclaw/skills/super-fetch/fetch.py "https://news.example.com/tech"
+```
+
+### 场景 2：需要登录的页面
+
+```bash
+# 第一次：使用人工干预模式登录
+python3 ~/.openclaw/skills/super-fetch/fetch.py "https://example.com/user" -i
+
+# 之后：自动使用保存的 session
+python3 ~/.openclaw/skills/super-fetch/fetch.py "https://example.com/user"
+```
+
+### 场景 3：处理验证码/滑动验证
+
+```bash
+python3 ~/.openclaw/skills/super-fetch/fetch.py "https://example.com/login" -i
+```
+
+> 弹窗后手动完成验证，点击绿色按钮继续。
+
+### 场景 4：下载 PDF/图片
+
+```bash
+python3 ~/.openclaw/skills/super-fetch/fetch.py "https://example.com/report.pdf" -o /tmp/report.pdf
+```
+
+### 场景 5：强制浏览器渲染（JS 页面）
+
+```bash
+python3 ~/.openclaw/skills/super-fetch/fetch.py "https://example.com/spa" -e playwright
+```
+
+### 场景 6：全量抓取（不过滤内容）
+
+```bash
+python3 ~/.openclaw/skills/super-fetch/fetch.py "https://example.com" -f
+```
+
+## Session 格式支持
+
+自动识别并转换三种 Session 格式：
+
+1. **Playwright 格式**（原生）：`{"cookies": [...], "origins": [...]}`
+2. **Cookie-Editor 导出格式**（JSON 数组）
+3. **旧版扁平格式**：`{"cookie_name": "cookie_value"}`
+
+## 依赖安装
+
+```bash
+pip install curl_cffi playwright beautifulsoup4 markdownify
+playwright install chromium
+```
+
+或使用 uvx 临时运行：
+
+```bash
+uvx --with curl-cffi --with playwright --with beautifulsoup4 --with markdownify python ~/.openclaw/skills/super-fetch/fetch.py "https://example.com"
+```
+
+## 注意事项
+
+- Session 和链接数据库保存在本地，**请勿上传**到 GitHub
+- 人工干预模式记得点击绿色按钮确认完成
+- 抓取受限网站请遵守 robots.txt 和服务条款
+- Session 有时效性，过期后需要重新登录

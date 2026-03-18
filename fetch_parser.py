@@ -3,7 +3,7 @@ import re
 import sqlite3
 import random
 import string
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 import markdownify
 
@@ -30,8 +30,6 @@ def init_db():
 def process_links_to_ids(soup: BeautifulSoup, base_url: str):
     """提取链接并转换为带独立命名空间的代号，如 @k9-1"""
     init_db()
-    base_parsed = urlparse(base_url)
-    base_netloc = base_parsed.netloc
     
     # 随机生成 2 位前缀作为命名空间
     session_prefix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=2))
@@ -44,17 +42,11 @@ def process_links_to_ids(soup: BeautifulSoup, base_url: str):
         if not href or href.startswith(('javascript:', 'mailto:', '#')): 
             continue
             
-        href_parsed = urlparse(href)
-        # 同域链接压缩
-        if href_parsed.netloc == base_netloc:
-            rel_path = href_parsed.path or "/"
-            if href_parsed.params: rel_path += f";{href_parsed.params}"
-            if href_parsed.query: rel_path += f"?{href_parsed.query}"
-            if href_parsed.fragment: rel_path += f"#{href_parsed.fragment}"
-            href = rel_path
+        # 【关键修复】：利用 urljoin 强制将所有链接（相对路径或绝对路径）转换为完整的绝对路径
+        absolute_href = urljoin(base_url, href)
             
         link_id = f"{session_prefix}-{link_counter}"
-        links_data.append((link_id, href))
+        links_data.append((link_id, absolute_href))
         
         # 替换 HTML 中的链接为代号
         a['href'] = f"@{link_id}"

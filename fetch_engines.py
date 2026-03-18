@@ -38,7 +38,6 @@ def format_session_data(session_file: str, target_url: str = "") -> dict:
         if isinstance(data, list):
             print(f"[*] 🍪 检测到 Cookie-Editor 导出格式，正在自动转换为标准格式...", file=sys.stderr)
             for c in data:
-                # 转换 sameSite 字段
                 same_site = str(c.get("sameSite", "Lax")).capitalize()
                 if same_site in ["No_restriction", "None"]: same_site = "None"
                 elif same_site == "Unspecified": same_site = "Lax"
@@ -49,7 +48,7 @@ def format_session_data(session_file: str, target_url: str = "") -> dict:
                     "value": c.get("value", ""),
                     "domain": c.get("domain", ""),
                     "path": c.get("path", "/"),
-                    "expires": c.get("expirationDate", -1),  # Cookie-Editor 使用 expirationDate
+                    "expires": c.get("expirationDate", -1), 
                     "httpOnly": c.get("httpOnly", False),
                     "secure": c.get("secure", False),
                     "sameSite": same_site
@@ -68,9 +67,9 @@ def format_session_data(session_file: str, target_url: str = "") -> dict:
         else:
             return default_state
 
-        # 将转换后的标准格式覆盖写入原文件，让 CFFI 和 Playwright 后续可以直接无缝读写
+        # 将转换后的标准格式覆盖写入原文件
         with open(session_file, 'w', encoding='utf-8') as f:
-            json.dump(pw_state, f, indent=2)
+            json.dump(pw_state, f, indent=2, ensure_ascii=False)
 
         return pw_state
     except Exception as e:
@@ -100,7 +99,7 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
         if content_type.startswith("text/") or content_type in ("application/json", "application/xml", "application/javascript"):
             content = response.text
         else:
-            content = response.content if hasattr(response, 'content') else response.text.encode() if isinstance(response.text, str) else response.text
+            content = response.content
         
         # 将 CFFI 产生的新 Cookie 规范化并合并回 Playwright 格式
         if session_file:
@@ -108,39 +107,24 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
                 new_cookies_map = {}
                 target_domain = urlparse(url).netloc
                 
-                if hasattr(session.cookies, 'jar'):
-                    for cookie in session.cookies.jar:
-                        new_cookies_map[(cookie.name, cookie.domain)] = {
-                            "name": cookie.name,
-                            "value": cookie.value,
-                            "domain": cookie.domain or target_domain,
-                            "path": cookie.path or "/",
-                            "expires": cookie.expires if cookie.expires else -1,
-                            "httpOnly": cookie.has_nonstandard_attr('httponly') or cookie.has_nonstandard_attr('HttpOnly') or False,
-                            "secure": cookie.secure,
-                            "sameSite": "Lax"
-                        }
-                else:
-                    for k, v in session.cookies.get_dict().items():
-                        new_cookies_map[(k, target_domain)] = {
-                            "name": k, "value": v, "domain": target_domain,
-                            "path": "/", "expires": -1, "httpOnly": False,
-                            "secure": False, "sameSite": "Lax"
-                        }
+                # 获取 session 产生的最新 cookies
+                actual_cookies = session.cookies.get_dict()
+                for k, v in actual_cookies.items():
+                    # 简化逻辑：以 name 为核心， domain 默认为当前请求域名
+                    new_cookies_map[k] = {
+                        "name": k, "value": v, "domain": target_domain,
+                        "path": "/", "expires": -1, "httpOnly": False,
+                        "secure": False, "sameSite": "Lax"
+                    }
 
-                merged_cookies = []
-                for old_c in pw_state.get("cookies",[]):
-                    key = (old_c["name"], old_c.get("domain", target_domain))
-                    if key in new_cookies_map:
-                        merged_cookies.append(new_cookies_map.pop(key))
-                    else:
-                        merged_cookies.append(old_c)
-                        
-                merged_cookies.extend(new_cookies_map.values())
-                pw_state["cookies"] = merged_cookies
+                # 合并逻辑：如果旧 cookie 列表中有同名项，则更新它，否则保留旧项，最后加入新项
+                merged_dict = {c["name"]: c for c in pw_state.get("cookies", [])}
+                merged_dict.update(new_cookies_map)
+                
+                pw_state["cookies"] = list(merged_dict.values())
 
                 with open(session_file, 'w', encoding='utf-8') as f:
-                    json.dump(pw_state, f, indent=2)
+                    json.dump(pw_state, f, indent=2, ensure_ascii=False)
             except Exception as e:
                 print(f"[!] 保存 Cookie 状态失败: {e}", file=sys.stderr)
                 
@@ -167,72 +151,31 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
             if pw_state and "cookies" in pw_state:
                 context_args["storage_state"] = session_file
                 print(f"[*] 🎫 注入 Playwright 存储状态: {os.path.basename(session_file)}", file=sys.stderr)
-            else:
-                print(f"[!] 警告: Session 格式不兼容，将以干净会话启动。", file=sys.stderr)
                 
         context = await browser.new_context(**context_args)
         
+        # 人工干预模式下的 JS 注入逻辑保持不变...
         if is_interactive:
             inject_js = """
             (() => {
                 if (window._claw_injected) return;
                 window._claw_injected = true;
-                
                 const injectBtn = () => {
                     if (document.getElementById('claw-done-btn')) return;
                     const btn = document.createElement('div');
                     btn.id = 'claw-done-btn';
                     btn.innerHTML = '✅ 操作/验证已完成，点击继续';
-                    
                     Object.assign(btn.style, {
                         position: 'fixed', zIndex: '2147483647', padding: '15px 25px',
                         background: '#00C853', color: 'white', border: 'none',
                         borderRadius: '8px', fontSize: '16px', fontWeight: 'bold',
                         cursor: 'move', boxShadow: '0 4px 15px rgba(0,0,0,0.4)',
-                        userSelect: 'none', transition: 'background 0.2s, transform 0.2s'
+                        userSelect: 'none', transition: 'background 0.2s, transform 0.2s',
+                        top: '20px', right: '20px'
                     });
-                    
-                    if (window._claw_btn_pos) {
-                        btn.style.left = window._claw_btn_pos.left;
-                        btn.style.top = window._claw_btn_pos.top;
-                    } else {
-                        btn.style.top = '20px'; btn.style.right = '20px';
-                    }
-                    
-                    let isDragging = false;
-                    let startX, startY, initialLeft, initialTop;
-                    
-                    btn.onmousedown = (e) => {
-                        isDragging = true;
-                        startX = e.clientX; startY = e.clientY;
-                        const rect = btn.getBoundingClientRect();
-                        initialLeft = rect.left; initialTop = rect.top;
-                        btn.style.transition = 'none';
-                        e.preventDefault();
-                    };
-                    
-                    window.addEventListener('mousemove', (e) => {
-                        if (!isDragging) return;
-                        let newLeft = initialLeft + (e.clientX - startX);
-                        let newTop = initialTop + (e.clientY - startY);
-                        btn.style.left = newLeft + 'px';
-                        btn.style.top = newTop + 'px';
-                        btn.style.right = 'auto';
-                        window._claw_btn_pos = { left: btn.style.left, top: btn.style.top };
-                    });
-                    
-                    window.addEventListener('mouseup', () => { isDragging = false; btn.style.transition = 'background 0.2s, transform 0.2s'; });
-                    
-                    btn.onclick = (e) => {
-                        window._fetch_interactive_done = true;
-                        btn.innerHTML = '⏳ 正在同步状态...';
-                        btn.style.background = '#FF9800';
-                    };
-                    
+                    btn.onclick = () => { window._fetch_interactive_done = true; btn.innerHTML = '⏳ 正在同步状态...'; btn.style.background = '#FF9800'; };
                     if (document.documentElement) document.documentElement.appendChild(btn);
                 };
-                
-                document.addEventListener('DOMContentLoaded', injectBtn);
                 setInterval(injectBtn, 1000); 
             })();
             """
@@ -264,29 +207,25 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
             await asyncio.sleep(wait)
             
             if is_interactive:
-                print(f"\n{'='*60}", file=sys.stderr)
-                print(f"[*] 🛠️ 进入【人工干预模式】！", file=sys.stderr)
-                print(f"[*] 1. 请在弹出的窗口中自由操作（登录、过验证、点击等）", file=sys.stderr)
-                print(f"[*] 2. 完成后，点击页面右上角绿色按钮即可继续", file=sys.stderr)
-                print(f"{'='*60}\n", file=sys.stderr)
+                print(f"\n{'='*60}\n[*] 🛠️ 进入【人工干预模式】！请在弹出窗口操作后点击绿色按钮。\n{'='*60}\n", file=sys.stderr)
                 await page.wait_for_function("window._fetch_interactive_done === true", timeout=0)
                 await asyncio.sleep(1)
             else:
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=3000)
+                try: await page.wait_for_load_state("networkidle", timeout=3000)
                 except: pass
                 
                 content = await page.content()
                 if any(cf_kw in content for cf_kw in ["cf-browser-verification", "Just a moment...", "cloudflare"]):
                     print("[*] 🛡️ 触发防爬质询，尝试自动等待绕过...", file=sys.stderr)
                     await asyncio.sleep(5)
-                
-                for i in range(2):
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    await asyncio.sleep(1)
 
             if session_file:
                 await context.storage_state(path=session_file)
+                # 读取并重新保存一次，确保 ensure_ascii=False
+                with open(session_file, 'r', encoding='utf-8') as f:
+                    tmp_data = json.load(f)
+                with open(session_file, 'w', encoding='utf-8') as f:
+                    json.dump(tmp_data, f, indent=2, ensure_ascii=False)
                 print(f"[*] 💾 状态已更新至: {os.path.basename(session_file)}", file=sys.stderr)
             
             content = await page.content()
@@ -310,4 +249,5 @@ async def fetch_target(url: str, engine: str, proxy: str, retries: int, session_
             print(f"[*] ❌ 引擎 {engine} 失败 (尝试 {attempt+1}/{retries}): {last_err}", file=sys.stderr)
             await asyncio.sleep(1)
             
-    return json.dumps({"error": f"抓取失败. 最终错误: {last_err}"}), "text/html"
+    # 【关键修复】：增加 ensure_ascii=False，防止错误信息中的中文变成 Unicode 编码
+    return json.dumps({"error": f"抓取失败. 最终错误: {last_err}"}, ensure_ascii=False), "text/html"
