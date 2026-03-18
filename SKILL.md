@@ -1,11 +1,10 @@
 ---
 name: super-fetch
 description: 高性能网页抓取工具，将网页转换为结构化 Markdown。支持 JavaScript 渲染、会话保持、登录态保存。
-dependencies:
-  - curl_cffi
-  - playwright
-  - beautifulsoup4
-  - markdownify
+metadata:
+  openclaw:
+    requires:
+      bins: [python3]
 ---
 
 # Super Fetch
@@ -16,10 +15,10 @@ dependencies:
 
 ```bash
 # 抓取网页
-python3 ~/.openclaw/skills/super-fetch/fetch.py https://example.com
+uvx --with curl_cffi,playwright,beautifulsoup4,markdownify python3 ~/.openclaw/skills/super-fetch/fetch.py https://example.com
 
 # 指定引擎（默认 cffi）
-python3 ~/.openclaw/skills/super-fetch/fetch.py https://example.com -e playwright
+uvx --with curl_cffi,playwright,beautifulsoup4,markdownify python3 ~/.openclaw/skills/super-fetch/fetch.py https://example.com -e playwright
 ```
 
 ## 核心功能
@@ -33,20 +32,20 @@ python3 ~/.openclaw/skills/super-fetch/fetch.py https://example.com -e playwrigh
 
 ```bash
 # curl_cffi：适合大部分情况
-python3 fetch.py https://news.ycombinator.com -e cffi
+uvx --with curl_cffi,beautifulsoup4,markdownify python3 fetch.py https://news.ycombinator.com -e cffi
 
 # playwright：需要渲染的页面
-python3 fetch.py https://www.zhihu.com -e playwright -w 5
+uvx --with curl_cffi,playwright,beautifulsoup4,markdownify python3 fetch.py https://www.zhihu.com -e playwright -w 5
 ```
 
 ### 2. 会话保持（登录态）
 
 ```bash
 # 首次：交互模式，浏览器弹出，完成登录后点击按钮
-python3 fetch.py https://example.com -i -s my_session.json
+uvx --with curl_cffi,playwright,beautifulsoup4,markdownify python3 fetch.py https://example.com -i -s my_session.json
 
 # 后续：自动使用保存的会话
-python3 fetch.py https://example.com/private -s my_session.json
+uvx --with curl_cffi,playwright,beautifulsoup4,markdownify python3 fetch.py https://example.com/private -s my_session.json
 ```
 
 会话文件会自动保存 Cookie，支持：
@@ -58,10 +57,10 @@ python3 fetch.py https://example.com/private -s my_session.json
 
 ```bash
 # 智能提取（默认）：去除导航、侧栏、广告
-python3 fetch.py https://example.com
+uvx --with curl_cffi,playwright,beautifulsoup4,markdownify python3 fetch.py https://example.com
 
 # 全量模式：不过滤
-python3 fetch.py https://example.com --full
+uvx --with curl_cffi,playwright,beautifulsoup4,markdownify python3 fetch.py https://example.com --full
 ```
 
 ### 4. 链接代号
@@ -75,29 +74,20 @@ python3 fetch.py https://example.com --full
 
 **反查原始链接**：
 ```bash
-# 查询单个
-python3 ~/.openclaw/skills/super-fetch/get_link.py @abcd-1
-
-# 查询整组
-python3 ~/.openclaw/skills/super-fetch/get_link.py abcd
-
-# 清理数据库
-python3 ~/.openclaw/skills/super-fetch/get_link.py --clear        # 清空全部
-python3 ~/.openclaw/skills/super-fetch/get_link.py --clear abcd   # 清理指定组
+uvx --with beautifulsoup4 python3 ~/.opencloak/skills/super-fetch/get_link.py @abcd-1
+uvx --with beautifulsoup4 python3 ~/.openclaw/skills/super-fetch/get_link.py abcd
 ```
 
 ### 5. 二进制下载
 
 ```bash
-# 保存图片、PDF 等
-python3 fetch.py https://example.com/image.png -o /tmp/image.png
-python3 fetch.py https://example.com/file.pdf -o /tmp/file.pdf
+uvx --with curl_cffi,beautifulsoup4,markdownify python3 fetch.py https://example.com/image.png -o /tmp/image.png
 ```
 
 ### 6. 代理
 
 ```bash
-python3 fetch.py https://example.com -p http://127.0.0.1:7890
+uvx --with curl_cffi,playwright,beautifulsoup4,markdownify python3 fetch.py https://example.com -p http://127.0.0.1:7890
 ```
 
 ## 参数说明
@@ -132,18 +122,13 @@ python3 fetch.py https://example.com -p http://127.0.0.1:7890
 - **links.db**: SQLite，存储链接代号映射
 - **session.json**: 默认会话文件
 
-## 依赖安装
+## 依赖安装（可选）
 
-```bash
-pip install curl_cffi playwright beautifulsoup4 markdownify
-playwright install chromium
-```
-
-或使用虚拟环境：
+如需本地运行而非每次 uvx：
 
 ```bash
 cd /tmp && uv venv fetch-env
 source fetch-env/bin/activate
-pip install curl_cffi playwright beautifulsoup4 markdownify
+uv pip install curl_cffi playwright beautifulsoup4 markdownify
 playwright install chromium
 ```
