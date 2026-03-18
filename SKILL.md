@@ -1,60 +1,72 @@
-# Super Fetch - 高性能网页抓取工具
+---
+name: super-fetch
+description: 高性能网页抓取工具，将网页转换为结构化 Markdown。支持 JavaScript 渲染、会话保持、登录态保存。
+dependencies:
+  - curl_cffi
+  - playwright
+  - beautifulsoup4
+  - markdownify
+---
 
-将网页转换为结构化 Markdown，支持 JavaScript 渲染和登录会话保持。
+# Super Fetch
+
+将任意网页转换为干净的 Markdown，保留正文、过滤噪音，支持登录态和 JavaScript 渲染。
 
 ## 快速开始
 
 ```bash
-# 安装依赖
-pip install curl_cffi playwright beautifulsoup4 markdownify
+# 抓取网页
+python3 ~/.openclaw/skills/super-fetch/fetch.py https://example.com
 
-# 最简用法
-uvx super-fetch https://example.com
-
-# 需要 JS 渲染时
-uvx super-fetch https://example.com -e playwright
+# 指定引擎（默认 cffi）
+python3 ~/.openclaw/skills/super-fetch/fetch.py https://example.com -e playwright
 ```
 
-## 典型场景
+## 核心功能
 
-### 1. 抓取静态页面（默认）
+### 1. 双引擎
+
+| 引擎 | 速度 | 适用场景 |
+|------|------|----------|
+| `cffi`（默认）| ⚡ 快 | 静态页面、搜索结果、API |
+| `playwright` | 🐢 稍慢 | 需 JS 渲染、登录态、动态内容 |
+
 ```bash
-# curl_cffi 引擎，速度快
-uvx super-fetch https://news.ycombinator.com/
-uvx super-fetch https://www.zhihu.com/hot
+# curl_cffi：适合大部分情况
+python3 fetch.py https://news.ycombinator.com -e cffi
+
+# playwright：需要渲染的页面
+python3 fetch.py https://www.zhihu.com -e playwright -w 5
 ```
 
-### 2. 抓取需要登录的页面
+### 2. 会话保持（登录态）
+
 ```bash
-# 首次：交互模式登录
-uvx super-fetch https://example.com -i -s session.json
-# → 浏览器弹出，完成登录后点击绿色按钮
+# 首次：交互模式，浏览器弹出，完成登录后点击按钮
+python3 fetch.py https://example.com -i -s my_session.json
 
-# 后续：自动使用会话
-uvx super-fetch https://example.com/private -s session.json
+# 后续：自动使用保存的会话
+python3 fetch.py https://example.com/private -s my_session.json
 ```
 
-### 3. 抓取动态渲染页面
+会话文件会自动保存 Cookie，支持：
+- Playwright StorageState JSON
+- Cookie-Editor 导出的列表
+- 简单键值对 `{"key": "value"}`
+
+### 3. 内容提取
+
 ```bash
-# playwright 引擎，等待 JS 执行
-uvx super-fetch https://example.com -e playwright -w 5
+# 智能提取（默认）：去除导航、侧栏、广告
+python3 fetch.py https://example.com
+
+# 全量模式：不过滤
+python3 fetch.py https://example.com --full
 ```
 
-### 4. 保存图片/文件
-```bash
-# 二进制内容必须用 -o 保存
-uvx super-fetch https://example.com/image.png -o /tmp/img.png
-uvx super-fetch https://example.com/file.pdf -o /tmp/file.pdf
-```
+### 4. 链接代号
 
-### 5. 使用代理
-```bash
-uvx super-fetch https://example.com -p http://127.0.0.1:7890
-```
-
-## 链接代号系统
-
-抓取时自动将链接转换为代号，便于阅读：
+抓取时自动将链接转为代号，方便阅读：
 
 ```
 原文: https://example.com/page1
@@ -64,14 +76,28 @@ uvx super-fetch https://example.com -p http://127.0.0.1:7890
 **反查原始链接**：
 ```bash
 # 查询单个
-get_link @abcd-1
+python3 ~/.openclaw/skills/super-fetch/get_link.py @abcd-1
 
 # 查询整组
-get_link abcd
+python3 ~/.openclaw/skills/super-fetch/get_link.py abcd
 
 # 清理数据库
-get_link --clear           # 清空全部
-get_link --clear abcd    # 清理指定组
+python3 ~/.openclaw/skills/super-fetch/get_link.py --clear        # 清空全部
+python3 ~/.openclaw/skills/super-fetch/get_link.py --clear abcd   # 清理指定组
+```
+
+### 5. 二进制下载
+
+```bash
+# 保存图片、PDF 等
+python3 fetch.py https://example.com/image.png -o /tmp/image.png
+python3 fetch.py https://example.com/file.pdf -o /tmp/file.pdf
+```
+
+### 6. 代理
+
+```bash
+python3 fetch.py https://example.com -p http://127.0.0.1:7890
 ```
 
 ## 参数说明
@@ -79,38 +105,45 @@ get_link --clear abcd    # 清理指定组
 | 参数 | 简写 | 默认 | 说明 |
 |------|------|------|------|
 | `--engine` | `-e` | cffi | 抓取引擎：`cffi` / `playwright` |
-| `--interactive` | `-i` | false | 交互模式，弹窗让你先操作 |
+| `--interactive` | `-i` | false | 交互模式，弹窗后可登录/操作 |
 | `--full` | `-f` | false | 全量提取，不过滤噪音 |
 | `--session` | `-s` | session.json | 会话文件路径 |
 | `--wait` | `-w` | 3 | playwright 渲染等待秒数 |
 | `--max-chars` | `-m` | 50000 | 最大输出字符 |
 | `--proxy` | `-p` | - | 代理地址 |
-| `--retries` | `-r` | 2 | 重试次数 |
-| `--output` | `-o` | - | 输出二进制文件路径 |
+| `--retries` | `-r` | 2 | 失败重试次数 |
+| `--output` | `-o` | - | 输出二进制文件 |
 
-## 会话格式
+## 输出示例
 
-支持三种 Cookie 格式，自动转换为 Playwright StorageState：
-1. Playwright StorageState JSON
-2. Cookie-Editor 导出的列表
-3. 简单键值对 `{"key": "value"}`
+```
+# 页面标题
+> [系统提示] 命名空间: abcd | 会话: session.json
+
+正文内容...
+
+![图片](@abcd-1)
+[链接](@abcd-2)
+```
 
 ## 数据存储
 
 - **目录**: `~/.openclaw/super-fetch/`
 - **links.db**: SQLite，存储链接代号映射
+- **session.json**: 默认会话文件
 
-## 依赖
+## 依赖安装
 
-```
-curl_cffi
-playwright
-beautifulsoup4
-markdownify
-playwright_stealth（可选，反爬虫）
-```
-
-安装浏览器：
 ```bash
+pip install curl_cffi playwright beautifulsoup4 markdownify
+playwright install chromium
+```
+
+或使用虚拟环境：
+
+```bash
+cd /tmp && uv venv fetch-env
+source fetch-env/bin/activate
+pip install curl_cffi playwright beautifulsoup4 markdownify
 playwright install chromium
 ```
