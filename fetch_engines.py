@@ -123,26 +123,28 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                 
         context = await browser.new_context(**context_args)
         
-        if is_interactive:
-            # 高级 JS 注入：修复拖拽、防止误触点击
-            inject_js = """
-            (() => {
-                if (window._claw_injected) return; window._claw_injected = true;
+        # 优化后的注入 JS
+        inject_js = """
+        (() => {
+            function createButton() {
+                if (document.getElementById('_claw_btn')) return;
                 const btn = document.createElement('div');
+                btn.id = '_claw_btn';
                 btn.innerHTML = '✅ 完成操作，点击抓取内容';
                 Object.assign(btn.style, {
                     position: 'fixed', zIndex: '2147483647', padding: '12px 24px',
                     background: '#00c853', color: 'white', borderRadius: '30px',
-                    cursor: 'move', boxShadow: '0 4px 15px rgba(0,0,0,0.4)',
-                    top: '20px', right: '20px', fontWeight: 'bold', userSelect: 'none',
-                    fontFamily: 'sans-serif', transition: 'transform 0.1s'
+                    cursor: 'pointer', boxShadow: '0 4px 15px rgba(0,0,0,0.5)',
+                    top: '20px', right: '20px', fontWeight: 'bold', 
+                    userSelect: 'none', fontFamily: 'sans-serif', 
+                    display: 'block', visibility: 'visible', opacity: '1'
                 });
+                
                 let isDragging = false, hasMoved = false, startX, startY, initX, initY;
                 btn.addEventListener('mousedown', (e) => {
                     isDragging = true; hasMoved = false;
                     startX = e.clientX; startY = e.clientY;
                     initX = btn.offsetLeft; initY = btn.offsetTop;
-                    btn.style.transform = 'scale(0.98)';
                 });
                 window.addEventListener('mousemove', (e) => {
                     if (!isDragging) return;
@@ -152,17 +154,32 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                     btn.style.top = (initY + dy) + 'px';
                     btn.style.right = 'auto';
                 });
-                window.addEventListener('mouseup', () => {
-                    isDragging = false; btn.style.transform = 'scale(1)';
-                });
+                window.addEventListener('mouseup', () => { isDragging = false; });
+                
                 btn.addEventListener('click', (e) => {
-                    if (hasMoved) { e.preventDefault(); return; }
+                    if (hasMoved) return;
                     window._fetch_interactive_done = true;
-                    btn.style.background = '#ff9100'; btn.innerHTML = '⏳ 正在同步并解析...';
+                    btn.style.background = '#ff9100'; 
+                    btn.innerHTML = '⏳ 正在同步并解析...';
                 });
-                document.documentElement.appendChild(btn);
-            })();
-            """
+                (document.body || document.documentElement).appendChild(btn);
+            }
+
+            // 初始尝试创建
+            createButton();
+            // 针对 SPA 页面，使用观察器确保按钮不被删掉
+            const observer = new MutationObserver(() => {
+                if (!document.getElementById('_claw_btn')) createButton();
+            });
+            observer.observe(document.documentElement, { childList: true, subtree: true });
+            
+            // 每秒强制检查一次（防止某些极端情况）
+            setInterval(createButton, 1000);
+        })();
+        """
+        
+        # 1. 预注入
+        if is_interactive:
             await context.add_init_script(inject_js)
             
         page = await context.new_page()
@@ -171,14 +188,29 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
             except: pass
         
         try:
+            # 使用 try-except 包装 goto，防止因某些资源加载失败导致程序崩溃
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout*1000)
-            except:
-                pass # 忽略部分加载超时
-            
+            except Exception as e:
+                print(f"[*] 页面加载超时或部分失败 (继续尝试注入按钮): {e}")
+
             if is_interactive:
-                while not await page.evaluate("window._fetch_interactive_done === true"):
-                    if page.is_closed(): break
+                # 2. 页面加载后再次手动注入，确保按钮存在
+                await page.evaluate(inject_js)
+                
+                print("[*] 浏览器已打开，请在页面完成操作（如登录、过验证码）后，点击页面右上角的绿色按钮。")
+                
+                # 等待用户点击按钮
+                while True:
+                    if page.is_closed():
+                        break
+                    try:
+                        # 检查标志位
+                        done = await page.evaluate("window._fetch_interactive_done === true")
+                        if done:
+                            break
+                    except:
+                        break # 页面可能已关闭
                     await asyncio.sleep(0.5)
             else:
                 await asyncio.sleep(wait)
