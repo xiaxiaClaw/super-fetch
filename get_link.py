@@ -1,45 +1,48 @@
 #!/usr/bin/env python3
-"""
-反查网页链接工具 (SQLite 高并发安全版)
-支持：批量反查、全局清理、指定命名空间清理
-"""
-
 import sqlite3
 import sys
 import os
 import argparse
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "links.db")
+# 统一指向 ~/.openclaw/super-fetch 目录
+DATA_DIR = os.path.expanduser("~/.openclaw/super-fetch")
+DB_PATH = os.path.join(DATA_DIR, "links.db")
 
 def main():
     parser = argparse.ArgumentParser(description="根据代号反查原始链接工具")
-    parser.add_argument("ids", nargs="*", help="链接代号(如 k9-1) 或 命名空间(如 k9)")
-    parser.add_argument("--clear", "-c", action="store_true", help="清理模式。若带参数则清理指定命名空间，不带参数则清空全部。")
+    parser.add_argument("ids", nargs="*", help="链接代号(如 abcd-1) 或 命名空间(如 abcd)")
+    parser.add_argument("--clear", "-c", action="store_true", help="清理模式。若带参数则清理指定项，不带参数则清空全部。")
     args = parser.parse_args()
 
     if not os.path.exists(DB_PATH) and not args.clear:
-        print("错误: 未找到链接数据库 links.db")
+        print(f"错误: 未找到链接数据库 {DB_PATH}")
         sys.exit(1)
         
     try:
-        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            # 1. 处理清理指令
+        # 增加 timeout 防止在 fetch.py 写入时产生数据库锁冲突
+        with sqlite3.connect(DB_PATH, timeout=20) as conn:
             if args.clear:
                 if not args.ids:
-                    # 全局清理
+                    # 情况 1: 完全清空
                     conn.execute("DELETE FROM links")
                     print("[*] 🧹 已清空数据库中所有链接记录。")
                 else:
-                    # 指定命名空间清理 (例如清理 k9-*)
-                    for ns in args.ids:
-                        clean_ns = ns.lstrip("@").split("-")[0] # 兼容输入 k9 或 k9-1
-                        cursor = conn.execute("DELETE FROM links WHERE id LIKE ?", (f"{clean_ns}-%",))
-                        print(f"[*] 🧹 已清理命名空间: {clean_ns} (影响 {cursor.rowcount} 条记录)")
+                    # 情况 2: 精准清理
+                    for item in args.ids:
+                        clean_val = item.lstrip("@")
+                        if "-" in clean_val:
+                            # 如果提供了具体编号，只删那一个
+                            cursor = conn.execute("DELETE FROM links WHERE id = ?", (clean_val,))
+                            print(f"[*] 🧹 已清理特定链接: @{clean_val}")
+                        else:
+                            # 如果只提供命名空间，删除该组下所有链接
+                            cursor = conn.execute("DELETE FROM links WHERE id LIKE ?", (f"{clean_val}-%",))
+                            print(f"[*] 🧹 已清理命名空间: {clean_val} (影响 {cursor.rowcount} 条记录)")
                 
-                conn.execute("VACUUM") 
+                conn.execute("VACUUM") # 压缩数据库文件体积
                 return
 
-            # 2. 处理查询指令
+            # 查询模式
             if args.ids:
                 cursor = conn.cursor()
                 for lid in args.ids:
@@ -50,6 +53,8 @@ def main():
                         print(f"@{clean_id} -> {row[0]}")
                     else:
                         print(f"@{clean_id} -> [未找到或已清理]")
+            else:
+                parser.print_help()
                     
     except Exception as e:
         print(f"数据库操作失败: {str(e)}")
