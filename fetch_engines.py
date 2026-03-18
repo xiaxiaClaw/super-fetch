@@ -179,7 +179,9 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                 window._claw_injected = true;
                 
                 const injectBtn = () => {
+                    // 只在按钮不存在时创建一次，避免页面变化时按钮闪烁
                     if (document.getElementById('claw-done-btn')) return;
+                    
                     const btn = document.createElement('div');
                     btn.id = 'claw-done-btn';
                     btn.innerHTML = '✅ 操作/验证已完成，点击继续';
@@ -192,12 +194,8 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                         userSelect: 'none', transition: 'background 0.2s, transform 0.2s'
                     });
                     
-                    if (window._claw_btn_pos) {
-                        btn.style.left = window._claw_btn_pos.left;
-                        btn.style.top = window._claw_btn_pos.top;
-                    } else {
-                        btn.style.top = '20px'; btn.style.right = '20px';
-                    }
+                    // 默认右上角
+                    btn.style.top = '20px'; btn.style.right = '20px';
                     
                     let isDragging = false;
                     let startX, startY, initialLeft, initialTop;
@@ -209,31 +207,61 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                         initialLeft = rect.left; initialTop = rect.top;
                         btn.style.transition = 'none';
                         e.preventDefault();
+                        e.stopPropagation(); // 防止点穿
                     };
                     
                     window.addEventListener('mousemove', (e) => {
                         if (!isDragging) return;
                         let newLeft = initialLeft + (e.clientX - startX);
                         let newTop = initialTop + (e.clientY - startY);
+                        // 限制在可视区域内
+                        newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - 200));
+                        newTop = Math.max(0, Math.min(newTop, window.innerHeight - 60));
                         btn.style.left = newLeft + 'px';
                         btn.style.top = newTop + 'px';
                         btn.style.right = 'auto';
-                        window._claw_btn_pos = { left: btn.style.left, top: btn.style.top };
                     });
                     
-                    window.addEventListener('mouseup', () => { isDragging = false; btn.style.transition = 'background 0.2s, transform 0.2s'; });
+                    window.addEventListener('mouseup', () => { 
+                        isDragging = false; 
+                        btn.style.transition = 'background 0.2s, transform 0.2s'; 
+                    });
                     
                     btn.onclick = (e) => {
+                        e.stopPropagation(); // 防止触发页面其他点击
                         window._fetch_interactive_done = true;
                         btn.innerHTML = '⏳ 正在同步状态...';
                         btn.style.background = '#FF9800';
                     };
                     
-                    if (document.documentElement) document.documentElement.appendChild(btn);
+                    // 使用 append 而不是 appendChild，避免被某些框架移除
+                    if (document.body) document.body.appendChild(btn);
+                    else if (document.documentElement) document.documentElement.appendChild(btn);
+                    
+                    // 使用 MutationObserver 监听按钮是否被移除，如果被移除则重新创建
+                    if (window.MutationObserver && document.body) {
+                        const observer = new MutationObserver((mutations) => {
+                            mutations.forEach((mutation) => {
+                                mutation.removedNodes.forEach((node) => {
+                                    if (node.id === 'claw-done-btn') {
+                                        // 延迟重新创建，避免立即重建又被移除
+                                        setTimeout(() => {
+                                            if (!document.getElementById('claw-done-btn')) {
+                                                injectBtn();
+                                            }
+                                        }, 500);
+                                    }
+                                });
+                            });
+                        });
+                        observer.observe(document.body, { childList: true, subtree: true });
+                    }
                 };
                 
-                document.addEventListener('DOMContentLoaded', injectBtn);
-                setInterval(injectBtn, 1000); 
+                // 立即尝试创建（页面加载前）
+                injectBtn();
+                // DOM 加载完成后再次尝试
+                document.addEventListener('DOMContentLoaded', injectBtn); 
             })();
             """
             await context.add_init_script(inject_js)
