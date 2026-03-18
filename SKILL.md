@@ -17,10 +17,6 @@ python fetch.py https://example.com -i
 # 使用会话
 python fetch.py https://example.com -s
 python fetch.py https://example.com -s my_session.json
-
-# 使用playwright（对于有爬虫限制的网站）
-python fetch.py https://example.com -e playwright
-python fetch.py https://example.com -e playwright -s my_session.json
 ```
 
 ## 会话规则
@@ -35,17 +31,20 @@ python fetch.py https://example.com -e playwright -s my_session.json
 
 ## 引擎选择
 
-| 引擎           | 速度    | 适用场景                                             |
-| -------------- | ------- | ---------------------------------------------------- |
-| `cffi`（默认） | ⚡ 快   | 静态页面、新闻、博客、API、无需登录的页面            |
-| `playwright`   | 🐢 稍慢 | 需 JS 渲染、SPA 应用、需登录、有验证码、动态加载内容 |
+| 引擎         | 速度  | 适用场景                                                       |
+| ------------ | ----- | -------------------------------------------------------------- |
+| `playwright` | 默认  | 绝大多数场景：JS 渲染、动态内容、登录、验证码等                |
+| `cffi`       | ⚡ 快 | 仅用于下载二进制文件或极其简单的静态页面/API或不限制爬虫的网页 |
 
 ```bash
-# 静态页面用默认引擎即可
+# 默认用 playwright 即可
 python fetch.py https://example.com
 
-# 动态页面用 playwright
-python fetch.py https://example.com -e playwright -w 5
+# 需要等待渲染
+python fetch.py https://example.com -w 5
+
+# 仅下载文件时用 cffi
+python fetch.py https://example.com/file.pdf -e cffi -o ./file.pdf
 ```
 
 ## SOP：登录/验证码处理
@@ -55,7 +54,6 @@ python fetch.py https://example.com -e playwright -w 5
 ```bash
 # 1. 打开浏览器窗口
 python fetch.py https://example.com -i
-# 交互模式会自动使用 playwright引擎
 
 # 2. 在弹出的浏览器中手动完成：
 #    - 输入账号密码登录
@@ -105,7 +103,6 @@ python fetch.py https://example.com -s my_cookies.json
 
 **注意事项：**
 
-- 爬虫限制网站请使用playwright引擎
 - 会话文件包含敏感 Cookie，请勿提交到 Git
 - 定期重新登录，Cookie 可能过期
 - 不同网站使用不同的会话文件，避免 Cookie 污染
@@ -116,11 +113,11 @@ python fetch.py https://example.com -s my_cookies.json
 # 全量模式（不过滤噪音）
 python fetch.py https://example.com --full
 
-# 使用 Playwright 引擎（JS 渲染）
-python fetch.py https://example.com -e playwright -w 5
+# 等待渲染
+python fetch.py https://example.com -w 5
 
-# 下载文件
-python fetch.py https://example.com/image.png -o ./image.png
+# 下载文件（用 cffi）
+python fetch.py https://example.com/image.png -e cffi -o ./image.png
 
 # 使用代理
 python fetch.py https://example.com -p http://127.0.0.1:7890
@@ -159,17 +156,17 @@ python get_link.py --clear abcd
 
 ## 参数说明
 
-| 参数            | 简写 | 默认   | 说明                                          |
-| --------------- | ---- | ------ | --------------------------------------------- |
-| `--engine`      | `-e` | `cffi` | 抓取引擎：`cffi` / `playwright`               |
-| `--interactive` | `-i` | false  | 交互模式，弹出浏览器                          |
-| `--full`        | `-f` | false  | 全量提取，不过滤                              |
-| `--session`     | `-s` | -      | 会话文件：无参用 `session.json`，或指定文件名 |
-| `--wait`        | `-w` | 3      | 渲染等待秒数                                  |
-| `--max-chars`   | `-m` | 50000  | 最大输出字符                                  |
-| `--proxy`       | `-p` | -      | 代理地址                                      |
-| `--retries`     | `-r` | 2      | 重试次数                                      |
-| `--output`      | `-o` | -      | 保存二进制文件                                |
+| 参数            | 简写 | 默认         | 说明                                          |
+| --------------- | ---- | ------------ | --------------------------------------------- |
+| `--engine`      | `-e` | `playwright` | 抓取引擎：`playwright`（默认）/ `cffi`        |
+| `--interactive` | `-i` | false        | 交互模式，弹出浏览器                          |
+| `--full`        | `-f` | false        | 全量提取，不过滤                              |
+| `--session`     | `-s` | -            | 会话文件：无参用 `session.json`，或指定文件名 |
+| `--wait`        | `-w` | 3            | 渲染等待秒数                                  |
+| `--max-chars`   | `-m` | 50000        | 最大输出字符                                  |
+| `--proxy`       | `-p` | -            | 代理地址                                      |
+| `--retries`     | `-r` | 2            | 重试次数                                      |
+| `--output`      | `-o` | -            | 保存二进制文件                                |
 
 ## 数据存储
 

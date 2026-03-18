@@ -51,8 +51,8 @@ def main():
         "--engine",
         "-e",
         choices=["cffi", "playwright"],
-        default="cffi",
-        help="抓取引擎",
+        default="playwright",
+        help="抓取引擎：playwright（默认）/ cffi（仅用于下载文件或简单静态页）",
     )
     parser.add_argument("--interactive", "-i", action="store_true", help="人工干预模式")
     parser.add_argument("--full", "-f", action="store_true", help="全量模式")
