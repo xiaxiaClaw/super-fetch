@@ -7,6 +7,13 @@ from urllib.parse import urlparse
 from curl_cffi.requests import AsyncSession
 from playwright.async_api import async_playwright
 
+
+def get_data_dir():
+    """跨平台获取数据目录"""
+    home = os.path.expanduser("~")
+    return os.path.join(home, ".openclaw", "super-fetch")
+
+
 try:
     import playwright_stealth
 except ImportError:
@@ -19,6 +26,7 @@ REAL_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
+
 def atomic_write_json(data: dict, filepath: str):
     """原子化写入 JSON，防止高并发下文件损坏"""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -26,10 +34,22 @@ def atomic_write_json(data: dict, filepath: str):
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, filepath)
+        # 跨平台原子替换：Windows 上 os.replace 也可用，但需确保目标文件不存在或可覆盖
+        try:
+            os.replace(tmp_path, filepath)
+        except PermissionError:
+            # Windows 上可能需要先删除目标文件
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            os.replace(tmp_path, filepath)
     except Exception as e:
-        if os.path.exists(tmp_path): os.remove(tmp_path)
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
         raise e
+
 
 def format_session_data(session_file: str, target_url: str = "") -> dict:
     """自动识别并转换各种 Cookie 格式为 Playwright StorageState 格式"""
@@ -49,8 +69,10 @@ def format_session_data(session_file: str, target_url: str = "") -> dict:
             # 转换 Cookie-Editor 等插件导出的列表格式
             for c in data:
                 same_site = str(c.get("sameSite", "Lax")).capitalize()
-                if same_site in ["No_restriction", "None"]: same_site = "None"
-                elif same_site not in ["Strict", "Lax", "None"]: same_site = "Lax"
+                if same_site in ["No_restriction", "None"]:
+                    same_site = "None"
+                elif same_site not in ["Strict", "Lax", "None"]:
+                    same_site = "Lax"
 
                 pw_state["cookies"].append({
                     "name": c.get("name", ""), "value": c.get("value", ""),
@@ -67,18 +89,19 @@ def format_session_data(session_file: str, target_url: str = "") -> dict:
                     "path": "/", "expires": -1, "httpOnly": False,
                     "secure": False, "sameSite": "Lax"
                 })
-        
+
         atomic_write_json(pw_state, session_file)
         return pw_state
     except Exception as e:
         print(f"[*] ⚠️ Session 转换警告: {e}", file=sys.stderr)
         return default_state
 
+
 async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, session_file: str = None) -> tuple:
     proxies = {"http": proxy, "https": proxy} if proxy else None
-    pw_state = {"cookies": [], "origins": []}
     cffi_cookies = {}
-    
+
+    # cffi 只读 session，不写入
     if session_file and os.path.exists(session_file):
         pw_state = format_session_data(session_file, url)
         for c in pw_state.get("cookies", []):
@@ -87,42 +110,35 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
     async with AsyncSession(impersonate="chrome120", proxies=proxies, timeout=timeout, headers=REAL_HEADERS, cookies=cffi_cookies) as session:
         response = await session.get(url)
         response.raise_for_status()
-        
+
         # 处理可能的二进制或文本内容
         ctype = response.headers.get("content-type", "").lower()
         if any(t in ctype for t in ["text", "json", "xml", "javascript"]):
             content = response.text
         else:
             content = response.content
-        
-        if session_file:
-            try:
-                # 合并更新 Cookie
-                target_domain = urlparse(url).netloc
-                current_cookies = session.cookies.get_dict()
-                merged_dict = {c["name"]: c for c in pw_state.get("cookies", [])}
-                for k, v in current_cookies.items():
-                    merged_dict[k] = {"name": k, "value": v, "domain": target_domain, "path": "/", "expires": -1, "httpOnly": False, "secure": False, "sameSite": "Lax"}
-                pw_state["cookies"] = list(merged_dict.values())
-                atomic_write_json(pw_state, session_file)
-            except: pass
-                
+
         return content, ctype
+
 
 async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, session_file: str = None, is_interactive: bool = False, wait: int = 3) -> tuple:
     async with async_playwright() as p:
+        launch_args = ['--disable-blink-features=AutomationControlled']
+        if sys.platform != 'win32':
+            launch_args.append('--no-sandbox')
+
         browser = await p.chromium.launch(
             headless=not is_interactive,
             proxy={"server": proxy} if proxy else None,
-            args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+            args=launch_args
         )
-        
+
         context_args = {"viewport": {"width": 1280, "height": 800}, "locale": "zh-CN", "user_agent": REAL_HEADERS["User-Agent"]}
         if session_file and os.path.exists(session_file):
             context_args["storage_state"] = session_file
-                
+
         context = await browser.new_context(**context_args)
-        
+
         # 优化后的注入 JS
         inject_js = """
         (() => {
@@ -135,11 +151,11 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                     position: 'fixed', zIndex: '2147483647', padding: '12px 24px',
                     background: '#00c853', color: 'white', borderRadius: '30px',
                     cursor: 'pointer', boxShadow: '0 4px 15px rgba(0,0,0,0.5)',
-                    top: '20px', right: '20px', fontWeight: 'bold', 
-                    userSelect: 'none', fontFamily: 'sans-serif', 
+                    top: '20px', right: '20px', fontWeight: 'bold',
+                    userSelect: 'none', fontFamily: 'sans-serif',
                     display: 'block', visibility: 'visible', opacity: '1'
                 });
-                
+
                 let isDragging = false, hasMoved = false, startX, startY, initX, initY;
                 btn.addEventListener('mousedown', (e) => {
                     isDragging = true; hasMoved = false;
@@ -155,11 +171,11 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                     btn.style.right = 'auto';
                 });
                 window.addEventListener('mouseup', () => { isDragging = false; });
-                
+
                 btn.addEventListener('click', (e) => {
                     if (hasMoved) return;
                     window._fetch_interactive_done = true;
-                    btn.style.background = '#ff9100'; 
+                    btn.style.background = '#ff9100';
                     btn.innerHTML = '⏳ 正在同步并解析...';
                 });
                 (document.body || document.documentElement).appendChild(btn);
@@ -172,21 +188,23 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                 if (!document.getElementById('_claw_btn')) createButton();
             });
             observer.observe(document.documentElement, { childList: true, subtree: true });
-            
+
             // 每秒强制检查一次（防止某些极端情况）
             setInterval(createButton, 1000);
         })();
         """
-        
+
         # 1. 预注入
         if is_interactive:
             await context.add_init_script(inject_js)
-            
+
         page = await context.new_page()
         if playwright_stealth:
-            try: await playwright_stealth.stealth_async(page)
-            except: pass
-        
+            try:
+                await playwright_stealth.stealth_async(page)
+            except:
+                pass
+
         try:
             # 使用 try-except 包装 goto，防止因某些资源加载失败导致程序崩溃
             try:
@@ -196,10 +214,13 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
 
             if is_interactive:
                 # 2. 页面加载后再次手动注入，确保按钮存在
-                await page.evaluate(inject_js)
-                
+                try:
+                    await page.evaluate(inject_js)
+                except:
+                    pass
+
                 print("[*] 浏览器已打开，请在页面完成操作（如登录、过验证码）后，点击页面右上角的绿色按钮。")
-                
+
                 # 等待用户点击按钮
                 while True:
                     if page.is_closed():
@@ -210,19 +231,23 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                         if done:
                             break
                     except:
-                        break # 页面可能已关闭
+                        break  # 页面可能已关闭
                     await asyncio.sleep(0.5)
             else:
                 await asyncio.sleep(wait)
 
             if session_file:
                 await context.storage_state(path=session_file)
-            
+
             content = await page.content()
-            ctype = await page.evaluate("document.contentType || 'text/html'")
+            try:
+                ctype = await page.evaluate("document.contentType || 'text/html'")
+            except:
+                ctype = 'text/html'
             return content, ctype
         finally:
             await browser.close()
+
 
 async def fetch_target(url, engine, proxy, retries, session_file, is_interactive, wait, timeout=30):
     for i in range(retries):
@@ -231,5 +256,6 @@ async def fetch_target(url, engine, proxy, retries, session_file, is_interactive
                 return await fetch_with_playwright(url, proxy, timeout, session_file, is_interactive, wait)
             return await fetch_with_curl_cffi(url, proxy, timeout, session_file)
         except Exception as e:
-            if i == retries - 1: raise e
+            if i == retries - 1:
+                raise e
             await asyncio.sleep(1)

@@ -1,128 +1,178 @@
 ---
 name: super-fetch
-description: 高性能网页抓取工具，将网页转换为结构化 Markdown。支持 JavaScript 渲染、会话保持、登录态保存。
+description: 高性能网页抓取工具，将网页转换为干净的 Markdown。支持 JavaScript 渲染、会话保持、登录态保存。跨平台 Windows/macOS/Linux。
 ---
 
 # Super Fetch
 
-将任意网页转换为干净的 Markdown，保留正文、过滤噪音，支持登录态和 JavaScript 渲染。
-
 ## 快速开始
 
 ```bash
-# 方式一：本地已安装依赖（推荐，快）
-python3 ~/.openclaw/skills/super-fetch/fetch.py https://example.com
+# 基础抓取
+python fetch.py https://example.com
 
-# 方式二：每次自动装依赖（无需手动装）
-uvx --with curl_cffi,playwright,beautifulsoup4,markdownify python3 ~/.openclaw/skills/super-fetch/fetch.py https://example.com
+# 交互模式（登录）
+python fetch.py https://example.com -i
+
+# 使用会话
+python fetch.py https://example.com -s
+python fetch.py https://example.com -s my_session.json
+
+# 使用playwright（对于有爬虫限制的网站）
+python fetch.py https://example.com -e playwright
+python fetch.py https://example.com -e playwright -s my_session.json
 ```
 
-## 本地安装依赖（推荐）
+## 会话规则
 
-首次运行前执行一次，后续调用更快：
+| 命令                                  | 说明                                |
+| ------------------------------------- | ----------------------------------- |
+| `python fetch.py <url>`               | 独立会话，无状态                    |
+| `python fetch.py <url> -s`            | 使用默认会话 `session.json`         |
+| `python fetch.py <url> -s my.json`    | 使用指定会话 `my.json`              |
+| `python fetch.py <url> -i`            | 交互模式，自动保存到 `session.json` |
+| `python fetch.py <url> -i -s my.json` | 交互模式，保存到指定会话            |
+
+## 引擎选择
+
+| 引擎           | 速度    | 适用场景                                             |
+| -------------- | ------- | ---------------------------------------------------- |
+| `cffi`（默认） | ⚡ 快   | 静态页面、新闻、博客、API、无需登录的页面            |
+| `playwright`   | 🐢 稍慢 | 需 JS 渲染、SPA 应用、需登录、有验证码、动态加载内容 |
 
 ```bash
-cd /tmp && uv venv fetch-env
-source fetch-env/bin/activate
-uv pip install curl_cffi playwright beautifulsoup4 markdownify
-playwright install chromium
+# 静态页面用默认引擎即可
+python fetch.py https://example.com
+
+# 动态页面用 playwright
+python fetch.py https://example.com -e playwright -w 5
 ```
 
-之后直接运行：
-```bash
-source /tmp/fetch-env/bin/activate
-python3 ~/.openclaw/skills/super-fetch/fetch.py https://example.com
-```
+## SOP：登录/验证码处理
 
-## 核心功能
-
-### 1. 双引擎
-
-| 引擎 | 速度 | 适用场景 |
-|------|------|----------|
-| `cffi`（默认）| ⚡ 快 | 静态页面、搜索结果、API |
-| `playwright` | 🐢 稍慢 | 需 JS 渲染、登录态、动态内容 |
+### 方式一：交互模式（推荐，本地操作）
 
 ```bash
-python3 fetch.py https://news.ycombinator.com -e cffi
-python3 fetch.py https://www.zhihu.com -e playwright -w 5
+# 1. 打开浏览器窗口
+python fetch.py https://example.com -i
+# 交互模式会自动使用 playwright引擎
+
+# 2. 在弹出的浏览器中手动完成：
+#    - 输入账号密码登录
+#    - 完成验证码（滑动/点选/短信等）
+#    - 确保页面跳转到登录后的状态
+
+# 3. 点击页面右上角绿色按钮"✅ 完成操作，点击抓取内容"
+
+# 4. 后续使用已保存的会话
+python fetch.py https://example.com/private -s
 ```
 
-### 2. 会话保持（登录态）
+### 方式二：远程导入 Cookie（Cookie-Editor）
+
+适用于：无法在本地打开浏览器、需要使用他人的登录态
+
+**步骤：**
+
+1. 在浏览器（Chrome/Edge/Firefox）中安装 [Cookie-Editor](https://cookie-editor.com/) 插件
+
+2. 登录目标网站，确保登录成功
+
+3. 点击 Cookie-Editor 插件图标 → 点击"Export" → 选择"JSON"格式
+
+4. 将导出的 JSON 内容保存到文件，例如 `my_cookies.json`，放到 `~/.openclaw/super-fetch/` 目录下
+
+5. 直接使用（会自动转换格式）：
 
 ```bash
-# 首次：交互模式，浏览器弹出，完成登录后点击按钮
-python3 fetch.py https://example.com -i -s my_session.json
-
-# 后续：自动使用保存的会话
-python3 fetch.py https://example.com/private -s my_session.json
+python fetch.py https://example.com -s my_cookies.json
 ```
 
-### 3. 内容提取
+**支持的 Cookie 格式：**
+
+- Playwright 原生格式（含 `cookies` 和 `origins`）
+- Cookie-Editor 导出的列表格式
+- 简单键值对格式 `{"key": "value"}`
+
+## 会话使用规范
+
+| 场景             | 推荐做法                                             |
+| ---------------- | ---------------------------------------------------- |
+| 日常抓取         | 不使用 `-s`，独立会话                                |
+| 单个网站长期使用 | 用 `-i` 创建会话后，后续用 `-s`                      |
+| 多个网站/账号    | 用 `-i -s site_a.json`、`-i -s site_b.json` 分别保存 |
+| 共享登录态       | 用 Cookie-Editor 导出 JSON 分享                      |
+
+**注意事项：**
+
+- 爬虫限制网站请使用playwright引擎
+- 会话文件包含敏感 Cookie，请勿提交到 Git
+- 定期重新登录，Cookie 可能过期
+- 不同网站使用不同的会话文件，避免 Cookie 污染
+
+## 常用命令
 
 ```bash
-# 智能提取（默认）：去除导航、侧栏、广告
-python3 fetch.py https://example.com
+# 全量模式（不过滤噪音）
+python fetch.py https://example.com --full
 
-# 全量模式：不过滤
-python3 fetch.py https://example.com --full
+# 使用 Playwright 引擎（JS 渲染）
+python fetch.py https://example.com -e playwright -w 5
+
+# 下载文件
+python fetch.py https://example.com/image.png -o ./image.png
+
+# 使用代理
+python fetch.py https://example.com -p http://127.0.0.1:7890
 ```
 
-### 4. 链接代号
+## 链接反查与数据库清理
 
-抓取时自动将链接转为代号，方便阅读：
-
-```
-原文: https://example.com/page1
-转换: @abcd-1
-```
-
-**反查原始链接**：
-```bash
-python3 ~/.openclaw/skills/super-fetch/get_link.py @abcd-1
-python3 ~/.openclaw/skills/super-fetch/get_link.py abcd
-```
-
-### 5. 二进制下载
+### 反查链接
 
 ```bash
-python3 fetch.py https://example.com/image.png -o /tmp/image.png
+# 反查单个链接
+python get_link.py @abcd-1
+
+# 反查多个
+python get_link.py @abcd-1 @abcd-2
 ```
 
-### 6. 代理
+### 数据库清理
 
 ```bash
-python3 fetch.py https://example.com -p http://127.0.0.1:7890
+# 清空全部（谨慎使用）
+python get_link.py --clear
+
+# 删除特定链接
+python get_link.py --clear @abcd-1
+
+# 删除某命名空间下所有链接
+python get_link.py --clear abcd
 ```
+
+**清理要求：**
+
+- `links.db` 会自动清理 7 天前的旧数据（5% 概率触发）
+- 抓取大量页面后，可手动执行 `--clear` 释放空间
+- 清理后无法反查之前的链接代号
 
 ## 参数说明
 
-| 参数 | 简写 | 默认 | 说明 |
-|------|------|------|------|
-| `--engine` | `-e` | cffi | 抓取引擎：`cffi` / `playwright` |
-| `--interactive` | `-i` | false | 交互模式，弹窗后可登录/操作 |
-| `--full` | `-f` | false | 全量提取，不过滤噪音 |
-| `--session` | `-s` | session.json | 会话文件路径 |
-| `--wait` | `-w` | 3 | playwright 渲染等待秒数 |
-| `--max-chars` | `-m` | 50000 | 最大输出字符 |
-| `--proxy` | `-p` | - | 代理地址 |
-| `--retries` | `-r` | 2 | 失败重试次数 |
-| `--output` | `-o` | - | 输出二进制文件 |
-
-## 输出示例
-
-```
-# 页面标题
-> [系统提示] 命名空间: abcd | 会话: session.json
-
-正文内容...
-
-![图片](@abcd-1)
-[链接](@abcd-2)
-```
+| 参数            | 简写 | 默认   | 说明                                          |
+| --------------- | ---- | ------ | --------------------------------------------- |
+| `--engine`      | `-e` | `cffi` | 抓取引擎：`cffi` / `playwright`               |
+| `--interactive` | `-i` | false  | 交互模式，弹出浏览器                          |
+| `--full`        | `-f` | false  | 全量提取，不过滤                              |
+| `--session`     | `-s` | -      | 会话文件：无参用 `session.json`，或指定文件名 |
+| `--wait`        | `-w` | 3      | 渲染等待秒数                                  |
+| `--max-chars`   | `-m` | 50000  | 最大输出字符                                  |
+| `--proxy`       | `-p` | -      | 代理地址                                      |
+| `--retries`     | `-r` | 2      | 重试次数                                      |
+| `--output`      | `-o` | -      | 保存二进制文件                                |
 
 ## 数据存储
 
-- **目录**: `~/.openclaw/super-fetch/`
-- **links.db**: SQLite，存储链接代号映射
-- **session.json**: 默认会话文件
+- **目录**: `~/.openclaw/super-fetch/`（Windows: `%USERPROFILE%\.openclaw\super-fetch\`）
+- `links.db` - 链接代号映射
+- `*.json` - 会话文件
