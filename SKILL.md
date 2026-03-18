@@ -1,104 +1,88 @@
 ---
 name: super-fetch
-description: 高性能网页抓取与正文提取核心引擎。支持智能噪音过滤、Token 极限压缩（链接代号化）、持久化会话管理以及人工干预模式。适用于需要规避反爬检测、处理验证码或在长上下文中维持高效信息密度的场景。
+description: 高性能网页抓取与正文提取核心引擎。支持智能噪音过滤、Token 极限压缩（链接代号化）、多格式持久化会话管理（支持 Cookie-Editor）以及人工干预模式。适用于需要规避反爬检测、处理验证码、远程授权或在长上下文中维持高效信息密度的场景。
 version: 1.0.0
 user-invocable: true
 ---
 
 # Super Fetch (Core Engine)
 
-这是 OpenClaw 的底层抓取基座。它负责将复杂的 HTML 转化为极简、高信息密度的 Markdown，并利用 SQLite 数据库管理链接映射以节省 Token。
+这是 OpenClaw 的底层抓取基座。它负责将复杂的 HTML 转化为极简、高信息密度的 Markdown，并利用 SQLite 数据库管理链接映射以极大地节省 LLM Token 上下文。
 
-## 📂 路径规范 (Path Constants)
+## 路径与状态管理 (Path & State)
 
 Agent 应当优先使用以下预设路径：
-- **脚本目录**: `~/.openclaw/skills/super-fetch/`
-- **默认会话文件**: `~/.openclaw/skills/super-fetch/session.json` (自动读写，存放所有登录凭证)
-- **链接数据库**: `~/.openclaw/skills/super-fetch/links.db`
+- **脚本目录**: `~/.openclaw/skills/super-fetch/` (或 `~/.openclaw/<workspace>/skills/super-fetch/`)
+- **链接数据库**: `~/.openclaw/skills/super-fetch/links.db` (存储有效期 3 天)
+- **默认会话文件**: `~/.openclaw/skills/super-fetch/session.json`
 
-或者存放在`~/.openclaw/<workspace>/skills/`中
+**关于凭证与登录状态 (session.json)：**
+该引擎具备**自适应凭证解析**能力，支持用户直接将以下三种格式粘贴入 `session.json` 中，系统会自动将其格式化为全引擎通用的标准状态：
+1. **Playwright 原生格式** (带 localStorage 支持，最高权限)。
+2. **Cookie-Editor 插件导出格式** (JSON 数组格式，最适合用户远程辅助登录)。
+3. **扁平字典格式** (如 `{"cookie_name": "value"}`)。
 
-## 🛠 核心指令集
+## 核心指令集 (Commands)
 
 ### 1. `fetch.py` (获取与解析)
-**功能**：抓取 URL 并输出清洗后的内容。
+**功能**：抓取 URL、绕过反爬、清洗噪音并输出含代号的高密度 Markdown 内容。
 ```bash
-python ~/.openclaw/skills/super-fetch/fetch.py "<URL>" [参数]
+python ~/.openclaw/skills/super-fetch/fetch.py "<URL>"[参数]
 ```
-- **默认 (Smart 模式)**: 自动评分提取正文，剔除导航、页脚、广告。
-- `-f, --full`: **全量模式**。当默认提取丢失了关键信息（如菜单、页脚联系方式）时使用。
-- `-e playwright`: **浏览器模式**。绕过强力反爬或加载动态渲染内容。
-- `-i, --interactive`: **人工干预模式**。弹出浏览器窗口处理验证码、滑块或手动登录。执行此模式时强制使用 playwright 引擎。
-- `-s, --session`: **会话文件**。默认自动使用同目录下的 `session.json`。
-- `-o, --output`: **下载文件**。当目标 URL 返回二进制内容（PDF、图片、视频等）时，保存为指定文件路径。
-- `-w, --wait`: **渲染等待**。Playwright 额外等待秒数（默认 3 秒）。
-- `-m, --max-chars`: **最大字符数**。输出内容上限（默认 50000）。
-- `-p, --proxy`: **代理设置**。如 `http://127.0.0.1:7890`。
-- `-r, --retries`: **重试次数**。失败重试次数（默认 2）。
+**常用参数**：
+- **(默认)**: Smart 模式，自动评分提取正文，剔除导航、页脚、广告。
+- `-f, --full`: **全量模式**。当默认提取丢失了关键信息（如菜单、页脚、评论区）时使用。
+- `-e playwright`: **全真浏览器模式**。绕过强力反爬（Cloudflare）或加载动态渲染 (SPA) 内容。
+- `-i, --interactive`: **人工干预模式**。弹出无头浏览器窗口处理验证码、滑块或引导用户手动登录。（强制使用 playwright 引擎）。
+- `-o, --output <path>`: **下载文件**。当目标 URL 为二进制文件（PDF、图片、视频、压缩包等）时，直接保存到指定路径。
+- `-w, --wait <秒>`: **渲染等待**。增加 JS 渲染时间（默认 3 秒）。
 
-### 2. `get_link.py` (反查与内存管理)
-**功能**：解析代号（如 `@x1-5`）或清理数据库空间。
+### 2. `get_link.py` (内存与代号管理)
+**功能**：解析页面中的链接代号（如 `@k9-1`），或清理数据库释放空间。
 ```bash
-# 反查具体代号 (支持多个)
-python ~/.openclaw/skills/super-fetch/get_link.py <ID1> <ID2>
+# 反查具体代号 (支持传入多个)
+python ~/.openclaw/skills/super-fetch/get_link.py @k9-1 @k9-5
 
-# 精准清理指定命名空间 (推荐，任务结束必做)
-python ~/.openclaw/skills/super-fetch/get_link.py --clear <namespace>
+# 精准清理指定命名空间 (Agent 任务结束的必做步骤)
+python ~/.openclaw/skills/super-fetch/get_link.py --clear k9
 ```
 
 ---
 
-## 📥 下载二进制文件
+## Agent 标准操作流 (SOP)
 
-当需要下载 PDF、图片、视频等二进制文件时，使用 `-o/--output` 参数：
+为了保证高效能与低 Token 消耗，Agent 必须严格遵循以下执行步骤：
 
+### 第一步：初次抓取
+优先使用极速轻量级抓取，且不加多余参数：
 ```bash
-# 下载 PDF 论文
-python ~/.openclaw/skills/super-fetch/fetch.py "https://arxiv.org/pdf/2509.19088.pdf" -o paper.pdf
+python fetch.py "https://example.com"
+```
+**异常与重试策略：**
+- **返回 403 / Just a moment (Cloudflare) / 抓取失败**：改用 `python fetch.py "<URL>" -e playwright`。
+- **返回内容过少 / 缺少关键导航**：改用 `python fetch.py "<URL>" --full`。
+- **遇到严格验证码或需复杂登录**：执行 `python fetch.py "<URL>" -i` 并提示用户：“已为您弹出浏览器，请手动完成验证/登录。完成后点击页面右上角绿色按钮。”
 
-# 下载图片
-python ~/.openclaw/skills/super-fetch/fetch.py "https://picsum.photos/800/600" -o image.jpg
+### 第二步：处理链接代号 (Token 压缩准则)
+解析返回的 Markdown 后，页面内所有链接已被替换为如 `[标题](@k9-1)` 的格式。
+- **绝对禁止**：一次性反查页面中所有的代号。
+- **正确做法**：仅当你决定深入阅读特定的条目（如某篇相关新闻、下一页按钮）时，调用 `get_link.py @k9-1` 获取真实的 URL，再对该真实 URL 发起新的 `fetch.py`。
+- **回答用户时**：除非用户明确要求提供完整 URL，否则在回答中可直接保留代号（如：“参考来源见 @a1-1”），不要做无谓的展开。
 
-# 下载视频
-python ~/.openclaw/skills/super-fetch/fetch.py "https://example.com/video.mp4" -o video.mp4
+### 第三步：下载二进制数据 (按需)
+如果你识别到目标是一个多媒体或文档资源（如 `.pdf`, `.mp4`），请直接使用 `-o` 参数避免控制台乱码：
+```bash
+python fetch.py "https://arxiv.org/pdf/2509.19088.pdf" -o paper.pdf
 ```
 
-**支持的类型**：PDF、DOCX、XLSX、图片(jpg/png/gif)、视频(mp4/webm)、音频(mp3/wav)、压缩包(zip/rar/7z) 等。
+### 第四步：清理内存 (任务收尾)
+分析当前页面或任务流结束后，从输出结果的顶部找到 `命名空间: <ns>`（例如 `k9`），主动清理数据库：
+```bash
+python get_link.py --clear k9
+```
 
----
+## 决策与故障排除准则 (Guidelines)
 
-## 🛡️ 人工干预流程 (Manual Intervention)
-
-当遇到 Cloudflare 质询、验证码拦截或需要手动登录时：
-
-1. **执行干预指令**:
-   ```bash
-   python ~/.openclaw/skills/super-fetch/fetch.py "<URL>" --interactive
-   ```
-2. **引导用户**: 告知用户：“已为您弹出浏览器，请手动完成验证/操作。完成后点击页面右上角绿色按钮。”
-3. **状态持久化**: 用户点击按钮后，凭证将自动保存至默认 `session.json`，后续抓取将自动维持该状态。
-
----
-
-## 🔄 Agent 标准操作流 (SOP)
-
-1. **初始执行**: 优先使用 `python fetch.py "<URL>"`。
-2. **处理链接代号**:
-   - 解析返回的 Markdown，识别条目代号（如 `[标题](@k9-1)`）。
-   - **Token 准则**: 不要反查所有代号。仅当你决定深入阅读特定条目时，调用 `get_link.py` 获取真实 URL。
-3. **异常处理**:
-   - 若返回 403 或验证提示：转入 **人工干预流程**。
-   - 若正文提取不全：增加 `--full` 参数重试。
-   - 若内容为空：尝试 `-e playwright -w 8` 增加渲染时间。
-4. **清理记录**: 分析任务完成后，提取输出中的 `命名空间: <ns>`，执行 `get_link.py --clear <ns>`。
-
----
-
-## 💡 决策准则 (Guidelines)
-
-- **默认 Session 策略**: 始终使用默认的 `session.json` 进行 Cookie 持久化。这使得 Agent 可以在不同网站间维持登录身份。
-- **命名空间识别**: 代号格式为 `@命名空间-序号`。清理时只需传入短前缀（如 `get_link.py --clear k9`）。
-- **Token 敏感**: 除非用户明确要求完整地址，否则在回复中应保留代号（如：“参考内容见 @a1-1”），以节省上下文空间。
-
----
-**注意**: 所有链接映射记录将在数据库中保留 3 天。确保脚本路径 `~/.openclaw/skills/super-fetch/` 及其子目录具备读写权限。
+1. **登录失效处理**：如果抓取结果显示“请登录”或用户态丢失，提醒用户：“由于权限限制无法查看，您可以利用 Cookie-Editor 插件导出 Cookie 并粘贴至 `session.json` 中，或者让我开启 `-i` 人工干预模式为您弹出登录窗口。”
+2. **多页面状态共享**：所有的 `fetch.py` 调用默认自动使用并更新 `session.json`。Agent 不需要显式传递 Cookie 即可在同一站点的不同子页面间维持会话。
+3. **内容截断**：默认输出上限为 50000 字符，如遇超长文本需结合 grep 或分段读取技巧进行后续处理。

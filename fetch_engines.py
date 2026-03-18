@@ -18,49 +18,88 @@ REAL_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
+def format_session_data(session_file: str, target_url: str = "") -> dict:
+    """读取并统一格式化 session 为 Playwright 格式，支持 Cookie-Editor 导出文件和旧版扁平字典"""
+    default_state = {"cookies": [], "origins":[]}
+    if not session_file or not os.path.exists(session_file):
+        return default_state
+
+    try:
+        with open(session_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        # 1. 如果已经是 Playwright 原生格式，直接返回
+        if isinstance(data, dict) and "cookies" in data:
+            return data
+
+        pw_state = {"cookies": [], "origins":[]}
+
+        # 2. 如果是 Cookie-Editor 导出的格式 (JSON Array)
+        if isinstance(data, list):
+            print(f"[*] 🍪 检测到 Cookie-Editor 导出格式，正在自动转换为标准格式...", file=sys.stderr)
+            for c in data:
+                # 转换 sameSite 字段
+                same_site = str(c.get("sameSite", "Lax")).capitalize()
+                if same_site in ["No_restriction", "None"]: same_site = "None"
+                elif same_site == "Unspecified": same_site = "Lax"
+                if same_site not in["Strict", "Lax", "None"]: same_site = "Lax"
+
+                pw_state["cookies"].append({
+                    "name": c.get("name", ""),
+                    "value": c.get("value", ""),
+                    "domain": c.get("domain", ""),
+                    "path": c.get("path", "/"),
+                    "expires": c.get("expirationDate", -1),  # Cookie-Editor 使用 expirationDate
+                    "httpOnly": c.get("httpOnly", False),
+                    "secure": c.get("secure", False),
+                    "sameSite": same_site
+                })
+        
+        # 3. 如果是旧版扁平字典 {"cookie_name": "cookie_value"}
+        elif isinstance(data, dict):
+            print(f"[*] 🍪 检测到旧版扁平 Cookie 格式，正在自动转换为标准格式...", file=sys.stderr)
+            target_domain = urlparse(target_url).netloc if target_url else ""
+            for k, v in data.items():
+                pw_state["cookies"].append({
+                    "name": k, "value": v, "domain": target_domain,
+                    "path": "/", "expires": -1, "httpOnly": False,
+                    "secure": False, "sameSite": "Lax"
+                })
+        else:
+            return default_state
+
+        # 将转换后的标准格式覆盖写入原文件，让 CFFI 和 Playwright 后续可以直接无缝读写
+        with open(session_file, 'w', encoding='utf-8') as f:
+            json.dump(pw_state, f, indent=2)
+
+        return pw_state
+    except Exception as e:
+        print(f"[!] Session 文件读取或转换失败: {e}", file=sys.stderr)
+        return default_state
+
+
 async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, session_file: str = None) -> str:
     """CFFI 引擎：极速请求，支持与 Playwright 格式互通的 Session 持久化"""
     proxies = {"http": proxy, "https": proxy} if proxy else None
     
-    # 统一使用 Playwright 兼容的 state 结构
-    pw_state = {"cookies": [], "origins": []}
+    pw_state = {"cookies": [], "origins":[]}
     cffi_cookies = {} 
     
     if session_file and os.path.exists(session_file):
-        try:
-            with open(session_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                
-            if isinstance(data, dict) and "cookies" in data:
-                # 1. Playwright 标准格式
-                pw_state = data
-                for c in data["cookies"]:
-                    cffi_cookies[c["name"]] = c["value"]
-                print(f"[*] 🍪 成功加载 Session 凭证: {os.path.basename(session_file)}", file=sys.stderr)
-            else:
-                # 2. 兼容旧版扁平字典格式并自动升级
-                cffi_cookies = data
-                target_domain = urlparse(url).netloc
-                for k, v in data.items():
-                    pw_state["cookies"].append({
-                        "name": k, "value": v, "domain": target_domain,
-                        "path": "/", "expires": -1, "httpOnly": False,
-                        "secure": False, "sameSite": "Lax"
-                    })
-                print(f"[*] 🍪 加载旧版 Cookie 格式 (已自动执行转换)", file=sys.stderr)
-        except Exception as e:
-            print(f"[!] 读取 Session 文件失败: {e}", file=sys.stderr)
+        pw_state = format_session_data(session_file, url)
+        for c in pw_state.get("cookies",[]):
+            cffi_cookies[c["name"]] = c["value"]
+        if cffi_cookies:
+            print(f"[*] 🍪 成功加载并应用 Session 凭证: {os.path.basename(session_file)}", file=sys.stderr)
 
     async with AsyncSession(impersonate="chrome120", proxies=proxies, timeout=timeout, headers=REAL_HEADERS, cookies=cffi_cookies) as session:
         response = await session.get(url)
         response.raise_for_status()
         
-        # 根据 content-type 判断返回内容
         content_type = response.headers.get("content-type", "").split(";")[0].strip()
         if content_type.startswith("text/") or content_type in ("application/json", "application/xml", "application/javascript"):
             content = response.text
         else:
-            # 二进制内容（PDF、图片等）
             content = response.content if hasattr(response, 'content') else response.text.encode() if isinstance(response.text, str) else response.text
         
         # 将 CFFI 产生的新 Cookie 规范化并合并回 Playwright 格式
@@ -69,7 +108,6 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
                 new_cookies_map = {}
                 target_domain = urlparse(url).netloc
                 
-                # 从 cookiejar 提取完整属性
                 if hasattr(session.cookies, 'jar'):
                     for cookie in session.cookies.jar:
                         new_cookies_map[(cookie.name, cookie.domain)] = {
@@ -90,9 +128,8 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
                             "secure": False, "sameSite": "Lax"
                         }
 
-                # 合并新旧 Cookie
                 merged_cookies = []
-                for old_c in pw_state["cookies"]:
+                for old_c in pw_state.get("cookies",[]):
                     key = (old_c["name"], old_c.get("domain", target_domain))
                     if key in new_cookies_map:
                         merged_cookies.append(new_cookies_map.pop(key))
@@ -108,6 +145,7 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
                 print(f"[!] 保存 Cookie 状态失败: {e}", file=sys.stderr)
                 
         return content, response.headers.get("content-type", "text/html")
+
 
 async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, session_file: str = None, is_interactive: bool = False, wait: int = 3) -> tuple:
     """Playwright 引擎：全真浏览器，支持人工干预交互与原生会话持久化"""
@@ -125,20 +163,15 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
         }
         
         if session_file and os.path.exists(session_file):
-            try:
-                with open(session_file, 'r', encoding='utf-8') as f:
-                    check_data = json.load(f)
-                if isinstance(check_data, dict) and "cookies" in check_data:
-                    context_args["storage_state"] = session_file
-                    print(f"[*] 🎫 注入 Playwright 存储状态: {os.path.basename(session_file)}", file=sys.stderr)
-                else:
-                    print(f"[!] 警告: Session 格式不兼容，将以干净会话启动。", file=sys.stderr)
-            except Exception as e:
-                print(f"[!] 读取状态文件失败: {e}", file=sys.stderr)
+            pw_state = format_session_data(session_file, url)
+            if pw_state and "cookies" in pw_state:
+                context_args["storage_state"] = session_file
+                print(f"[*] 🎫 注入 Playwright 存储状态: {os.path.basename(session_file)}", file=sys.stderr)
+            else:
+                print(f"[!] 警告: Session 格式不兼容，将以干净会话启动。", file=sys.stderr)
                 
         context = await browser.new_context(**context_args)
         
-        # 终极版：可拖拽人工干预按钮脚本
         if is_interactive:
             inject_js = """
             (() => {
@@ -207,7 +240,6 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
             
         page = await context.new_page()
         
-        # 应用 Stealth 防止被检测为机器人
         if playwright_stealth:
             try:
                 s_func = getattr(playwright_stealth, 'stealth_async', None) or getattr(playwright_stealth, 'stealth', None)
@@ -216,7 +248,6 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                     if asyncio.iscoroutine(res): await res
             except Exception: pass
         
-        # 资源拦截逻辑 (非干预模式下拦截多媒体节省流量/时间)
         async def route_intercept(route):
             if not is_interactive and route.request.resource_type in ["image", "media", "font"]:
                 await route.abort()
@@ -245,13 +276,11 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                     await page.wait_for_load_state("networkidle", timeout=3000)
                 except: pass
                 
-                # Cloudflare 检测与自动等待
                 content = await page.content()
                 if any(cf_kw in content for cf_kw in ["cf-browser-verification", "Just a moment...", "cloudflare"]):
                     print("[*] 🛡️ 触发防爬质询，尝试自动等待绕过...", file=sys.stderr)
                     await asyncio.sleep(5)
                 
-                # 多次滚动触发懒加载
                 for i in range(2):
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     await asyncio.sleep(1)
@@ -266,6 +295,7 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
         finally:
             await browser.close()
 
+
 async def fetch_target(url: str, engine: str, proxy: str, retries: int, session_file: str, is_interactive: bool, wait: int = 3, timeout: int = 30):
     """引擎调度中心"""
     last_err = ""
@@ -274,7 +304,7 @@ async def fetch_target(url: str, engine: str, proxy: str, retries: int, session_
             if engine == 'playwright':
                 return await fetch_with_playwright(url, proxy, timeout, session_file, is_interactive, wait)
             else:
-                return await fetch_with_curl_cffi(url, proxy, session_file)
+                return await fetch_with_curl_cffi(url, proxy, timeout, session_file)
         except Exception as e:
             last_err = str(e)
             print(f"[*] ❌ 引擎 {engine} 失败 (尝试 {attempt+1}/{retries}): {last_err}", file=sys.stderr)
