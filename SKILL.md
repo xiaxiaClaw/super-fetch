@@ -1,10 +1,6 @@
 ---
 name: super-fetch
 description: 高性能网页抓取工具，将网页转换为结构化 Markdown。支持 JavaScript 渲染、会话保持、登录态保存。
-metadata:
-  openclaw:
-    requires:
-      bins: [uv, python3]
 ---
 
 # Super Fetch
