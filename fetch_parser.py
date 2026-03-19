@@ -7,17 +7,7 @@ from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup, Comment
 import markdownify
 
-
-def get_data_dir():
-    """跨平台获取数据目录"""
-    home = os.path.expanduser("~")
-    return os.path.join(home, ".openclaw", "super-fetch")
-
-
-# 统一数据目录
-DATA_DIR = get_data_dir()
-os.makedirs(DATA_DIR, exist_ok=True)
-DB_PATH = os.path.join(DATA_DIR, "links.db")
+from core import DATA_DIR, DB_PATH
 
 
 def init_db():
@@ -229,7 +219,10 @@ def extract_page_content(html: str, url: str, full_mode: bool = False):
     html = re.sub(r'<(script|style|noscript)[^>]*>.*?</\1>', '', html, flags=re.I | re.S)
 
     soup = BeautifulSoup(html, 'html.parser')
-    title = (soup.title.string if soup.title else "Untitled Page").strip()
+    if soup.title and soup.title.string:
+        title = soup.title.string.strip()
+    else:
+        title = "Untitled Page"
 
     if full_mode:
         root = soup.body if soup.body else soup

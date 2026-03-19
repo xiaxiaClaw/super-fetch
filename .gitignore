@@ -1,8 +1,0 @@
-# 隐私文件 - 不上传
-session.json
-links.db
-.gitignore
-__pycache__/
-*.pyc
-*.pyo
-__pycache__/

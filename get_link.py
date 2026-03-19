@@ -4,16 +4,7 @@ import sys
 import os
 import argparse
 
-
-def get_data_dir():
-    """跨平台获取数据目录"""
-    home = os.path.expanduser("~")
-    return os.path.join(home, ".openclaw", "super-fetch")
-
-
-# 统一指向数据目录
-DATA_DIR = get_data_dir()
-DB_PATH = os.path.join(DATA_DIR, "links.db")
+from core import DB_PATH
 
 
 def main():

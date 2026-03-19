@@ -4,27 +4,17 @@ import json
 import asyncio
 import tempfile
 from urllib.parse import urlparse
+from typing import Optional, Tuple
 from curl_cffi.requests import AsyncSession
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
-
-def get_data_dir():
-    """跨平台获取数据目录"""
-    home = os.path.expanduser("~")
-    return os.path.join(home, ".openclaw", "super-fetch")
+from core import REAL_HEADERS
 
 
 try:
     import playwright_stealth
 except ImportError:
     playwright_stealth = None
-
-REAL_HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
 
 
 def atomic_write_json(data: dict, filepath: str):
@@ -259,3 +249,117 @@ async def fetch_target(url, engine, proxy, retries, session_file, is_interactive
             if i == retries - 1:
                 raise e
             await asyncio.sleep(1)
+
+
+class PlaywrightPool:
+    """
+    Playwright 并发池 - 复用单个 Browser，创建多个 Context/Page 实现并发
+
+    优势：
+    - 只启动一个浏览器进程，资源占用低
+    - 每个请求有独立的 Context，Cookie 隔离
+    - 支持真正的并发抓取
+    """
+
+    def __init__(
+        self,
+        proxy: Optional[str] = None,
+        pool_size: int = 3,
+        headless: bool = True,
+        user_agent: Optional[str] = None,
+    ):
+        self.proxy = proxy
+        self.pool_size = pool_size
+        self.headless = headless
+        self.user_agent = user_agent or REAL_HEADERS["User-Agent"]
+
+        self._playwright = None
+        self._browser: Optional[Browser] = None
+        self._semaphore: Optional[asyncio.Semaphore] = None
+        self._lock = asyncio.Lock()
+
+    async def _init_browser(self):
+        """初始化浏览器（仅调用一次）"""
+        if self._browser is not None:
+            return
+
+        async with self._lock:
+            if self._browser is not None:
+                return
+
+            self._playwright = await async_playwright().start()
+
+            launch_args = ['--disable-blink-features=AutomationControlled']
+            if sys.platform != 'win32':
+                launch_args.append('--no-sandbox')
+
+            self._browser = await self._playwright.chromium.launch(
+                headless=self.headless,
+                proxy={"server": self.proxy} if self.proxy else None,
+                args=launch_args
+            )
+
+            self._semaphore = asyncio.Semaphore(self.pool_size)
+
+    async def fetch_page(
+        self,
+        url: str,
+        timeout: int = 30,
+        session_file: Optional[str] = None,
+        wait: int = 3,
+    ) -> Tuple[str, str]:
+        """从池中获取一个 Page 来抓取"""
+        await self._init_browser()
+
+        async with self._semaphore:
+            # 创建独立的 Context（Cookie 隔离）
+            context_args = {
+                "viewport": {"width": 1280, "height": 800},
+                "locale": "zh-CN",
+                "user_agent": self.user_agent
+            }
+
+            if session_file and os.path.exists(session_file):
+                context_args["storage_state"] = session_file
+
+            context = await self._browser.new_context(**context_args)
+
+            # 注入 stealth（如果可用）
+            page = await context.new_page()
+            if playwright_stealth:
+                try:
+                    await playwright_stealth.stealth_async(page)
+                except:
+                    pass
+
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                await asyncio.sleep(wait)
+
+                if session_file:
+                    await context.storage_state(path=session_file)
+
+                content = await page.content()
+                try:
+                    ctype = await page.evaluate("document.contentType || 'text/html'")
+                except:
+                    ctype = 'text/html'
+                return content, ctype
+            finally:
+                await context.close()
+
+    async def close(self):
+        """关闭浏览器"""
+        if self._browser:
+            await self._browser.close()
+            self._browser = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+
+    async def __aenter__(self):
+        await self._init_browser()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
