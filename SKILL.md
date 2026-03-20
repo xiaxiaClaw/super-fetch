@@ -32,7 +32,7 @@ python fetch.py -F urls.txt
 | 触发方式 | 模式 | 默认引擎 |
 |---------|------|---------|
 | 单个 URL + 无 -F | **单 URL 模式** | playwright |
-| 多个 URL / -F | **批量并发模式** | cffi |
+| 多个 URL / -F | **批量并发模式** | playwright |
 
 ## 单 URL 模式
 
@@ -94,8 +94,8 @@ python fetch.py -F urls.txt -o results.json
 # 保守模式（防爬严格的网站）
 python fetch.py -F urls.txt \
   -c 2 \
-  --domain-delay-min 5 \
-  --domain-delay-max 10
+  --domain-delay-min 3 \
+  --domain-delay-max 6
 
 # 激进模式（内部网站或不限制的网站）
 python fetch.py -F urls.txt \
@@ -222,16 +222,16 @@ python fetch.py -F urls.txt -e playwright -c 2
 python fetch.py -F urls.txt -s session.json
 ```
 
-## 链接反查与数据库清理
+## ⚠️ 链接反查（必须掌握的流程）
 
-### 为什么需要反查链接？
+### 什么时候需要反查？
 
-输出的 Markdown 中，所有链接（`<a>` 标签的 `href` 和 `<img>` 标签的 `src`）会被替换为**代号**（格式：`@{namespace}-{number}`，如 `@abcd-1`），这样可以：
-- 缩短输出长度
-- 避免敏感 URL 直接暴露
-- 统一管理链接
+**抓取搜索结果后，所有链接都会变成代号，必须反查才能拿到真实 URL。**
 
-需要使用 `get_link.py` 反查代号才能得到真实 URL。
+典型场景：
+- 抓取微博/小红书/知乎搜索结果后，想访问具体帖子
+- 批量抓取后处理结果文件，想知道每个链接指向什么
+- 想抓取特定帖子详情，但只有搜索结果页
 
 ### 反查链接
 
@@ -239,9 +239,28 @@ python fetch.py -F urls.txt -s session.json
 # 反查单个链接
 python get_link.py @abcd-1
 
-# 反查多个
-python get_link.py @abcd-1 @abcd-2
+# 反查多个（推荐，一次性反查多个）
+python get_link.py @abcd-1 @abcd-2 @abcd-3
 ```
+
+### 完整使用流程
+
+```bash
+# 1. 抓取搜索结果（假设搜索微博）
+python fetch.py "https://s.weibo.com/weibo?q=关键词" -s session.json -w 5
+
+# 2. 输出中链接都是代号，如 @abc-12
+#    复制需要反查的代号
+
+# 3. 反查获取真实 URL
+python get_link.py @abc-12 @abc-15 @abc-20
+
+# 4. 输出：@abc-12 -> https://weibo.com/1234567890
+#    用真实 URL 访问帖子详情
+python fetch.py "https://weibo.com/1234567890" -s session.json -w 5
+```
+
+**注意**：代号 `@{namespace}-{number}` 中的 namespace 是每次抓取随机生成的，旧的代号在新的抓取中可能失效（但数据库中已保存的映射不受影响）。
 
 ### 数据库清理
 
@@ -323,15 +342,14 @@ python fetch.py -F urls.txt                        # 用 -F 参数
 ### 模块依赖关系
 
 ```
-fetch.py (单 URL 入口)
-    └── fetch_engines.fetch_target()
-            ├── fetch_with_curl_cffi()
-            └── fetch_with_playwright()
-
-fetch_batch.py (批量并发入口)
-    ├── fetch_engines.PlaywrightPool (playwright 并发池)
-    ├── fetch_engines.fetch_with_curl_cffi() (cffi 直接调用)
-    └── fetch_parser.extract_page_content()
+fetch.py (统一入口)
+    ├── fetch_engines.fetch_target()         # 单 URL 抓取
+    │       ├── fetch_with_curl_cffi()
+    │       └── fetch_with_playwright()
+    │
+    └── BatchFetcher.fetch_all()            # 批量并发抓取
+            ├── PlaywrightPool              # playwright 并发池
+            └── fetch_with_curl_cffi()     # cffi 直接调用
 ```
 
 ## 数据存储
@@ -344,11 +362,10 @@ fetch_batch.py (批量并发入口)
 
 ```
 super-fetch/
-└── super-fetch/      # 代码包
-    ├── fetch.py       # 统一入口（单 URL + 批量）
-    ├── fetch_batch.py # 批量抓取模块
-    ├── fetch_engines.py # 抓取引擎（含 PlaywrightPool）
-    ├── fetch_parser.py  # HTML 解析
-    └── get_link.py    # 链接反查
+├── fetch.py           # 统一入口（单 URL + 批量）
+├── fetch_engines.py    # 抓取引擎（含 PlaywrightPool）
+├── fetch_parser.py     # HTML 解析
+├── core.py             # 共享工具和配置
+└── get_link.py        # 链接反查
 ```
 
