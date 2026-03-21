@@ -321,6 +321,38 @@ python fetch.py -F urls.txt                        # 用 -F 参数
 
 > **引擎默认值**：无论单 URL 还是批量模式，默认都使用 `playwright`。
 
+## 架构说明
+
+### Playwright 并发原理 (fetch_engines.PlaywrightPool)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     单个 Browser 进程                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
+│  │   Context 1  │  │   Context 2  │  │   Context 3  │... │
+│  │  (Page 1)    │  │  (Page 2)    │  │  (Page 3)    │    │
+│  │  Cookie 隔离 │  │  Cookie 隔离 │  │  Cookie 隔离 │    │
+│  └──────────────┘  └──────────────┘  └──────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+优势：
+- 只启动一个浏览器进程，内存占用低
+- 每个请求有独立的 Context，Cookie 互不影响
+- 支持真正的并发
+
+### 模块依赖关系
+
+```
+fetch.py (统一入口)
+    ├── fetch_engines.fetch_target()         # 单 URL 抓取
+    │       ├── fetch_with_curl_cffi()
+    │       └── fetch_with_playwright()
+    │
+    └── BatchFetcher.fetch_all()            # 批量并发抓取
+            ├── PlaywrightPool              # playwright 并发池
+            └── fetch_with_curl_cffi()     # cffi 直接调用
+```
 
 ## 数据存储
 
