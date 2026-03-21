@@ -53,6 +53,7 @@ python fetch.py https://example.com -i      # 创建会话（弹出浏览器）
 
 ## 详细文档
 
+- [安装指南](references/installation.md) - uv/pip 安装、Playwright 浏览器
 - [常见用法](references/usage.md) - 单 URL 抓取、文件下载、引擎选择
 - [批量抓取](references/batch.md) - 并发配置、调优参数、输出格式
 - [会话与登录](references/session.md) - 交互模式、Cookie 导入
@@ -69,6 +70,7 @@ super-fetch/
 ├── core.py             # 共享工具
 ├── get_link.py        # 链接反查
 └── references/         # 详细文档
+    ├── installation.md
     ├── usage.md
     ├── batch.md
     ├── session.md

@@ -11,10 +11,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from core import REAL_HEADERS
 
 
-try:
-    import playwright_stealth
-except ImportError:
-    playwright_stealth = None
+import playwright_stealth
 
 
 def atomic_write_json(data: dict, filepath: str):
