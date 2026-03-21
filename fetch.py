@@ -67,7 +67,7 @@ class BatchFetcher:
 
     def __init__(
         self,
-        concurrency: int = 3,
+        concurrency: int = 5,
         domain_min_delay: float = 2.0,
         domain_max_delay: float = 5.0,
         global_jitter: float = 0.5,
@@ -186,7 +186,15 @@ class BatchFetcher:
             return FetchResult(url=url, success=False, error=last_error or "未知错误")
 
         tasks = [fetch_with_retry(url) for url in urls]
-        return await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # 处理异常：把抛出的异常转为 FetchResult
+        processed = []
+        for r in results:
+            if isinstance(r, Exception):
+                processed.append(FetchResult(url="", success=False, error=str(r)))
+            else:
+                processed.append(r)
+        return processed
 
     async def fetch_all_playwright(
         self,
@@ -239,9 +247,15 @@ class BatchFetcher:
 
                 return FetchResult(url=url, success=False, error=last_error or "未知错误")
 
-            results = await asyncio.gather(*[fetch_with_retry(url) for url in urls])
-
-        return results
+            results = await asyncio.gather(*[fetch_with_retry(url) for url in urls], return_exceptions=True)
+            # 处理异常：把抛出的异常转为 FetchResult
+            processed = []
+            for r in results:
+                if isinstance(r, Exception):
+                    processed.append(FetchResult(url="", success=False, error=str(r)))
+                else:
+                    processed.append(r)
+            return processed
 
     async def fetch_all(
         self,
@@ -470,7 +484,7 @@ def main():
     batch_group = parser.add_argument_group("批量并发模式（使用 -F 或传入多个 URL 触发）")
     batch_group.add_argument("urls", nargs="*", help="目标 URL 列表（批量模式）", metavar="URL")
     batch_group.add_argument("--file", "-F", help="从文件读取 URL 列表（每行一个）")
-    batch_group.add_argument("--concurrency", "-c", type=int, default=3, help="最大并发数（默认 3）")
+    batch_group.add_argument("--concurrency", "-c", type=int, default=5, help="最大并发数（默认 5）")
     batch_group.add_argument("--domain-delay-min", type=float, default=2.0, help="同一域名最小请求间隔（秒）")
     batch_group.add_argument("--domain-delay-max", type=float, default=5.0, help="同一域名最大请求间隔（秒）")
     batch_group.add_argument("--jitter", type=float, default=0.5, help="全局随机抖动上限（秒）")
