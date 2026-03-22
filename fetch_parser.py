@@ -3,7 +3,7 @@ import re
 import sqlite3
 import random
 import string
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, unquote
 from bs4 import BeautifulSoup, Comment
 import markdownify
 
@@ -229,9 +229,9 @@ def extract_page_content(html: str, url: str, full_mode: bool = False):
         # 获取最佳内容节点
         root = get_best_content_node(soup)
 
-    # 关键 1/2：无论哪种模式，最后都必须清理 root 里的 style/script 等噪音标签
-    # 防止 markdownify 把 CSS/JS 也转换成 Markdown
-    for elem in root.find_all(['script', 'style', 'noscript', 'svg', 'canvas']):
+    # 关键 1/3：清理大部分噪音标签，但保留 textarea（里面有有意思的 JSON 数据）
+    noise_tags = ['script', 'style', 'noscript', 'svg', 'canvas', 'link']
+    for elem in root.find_all(noise_tags):
         try:
             elem.decompose()
         except:
@@ -242,15 +242,62 @@ def extract_page_content(html: str, url: str, full_mode: bool = False):
 
     ns = process_links_to_ids(root, url)
 
+    # 关键 2/3：处理 textarea 里的 JSON 数据，把里面的链接也转成代号
+    # 我们需要先收集所有 textarea，处理后替换内容
+    init_db()
+    counter = 1
+    textarea_link_maps = []  # 保存每个 textarea 的替换映射
+
+    for ta in root.find_all('textarea'):
+        if ta.string:
+            content = ta.string
+            # 先找 linkurl 字段
+            linkurl_pattern = r'"linkurl"\s*:\s*"([^"]+)"'
+            matches = list(re.finditer(linkurl_pattern, content))
+            link_map = {}
+
+            for m in matches:
+                encoded_url = m.group(1)
+                try:
+                    # URL decode
+                    decoded_url = unquote(encoded_url)
+                    # 再处理一次，因为可能有双重编码
+                    if '%' in decoded_url:
+                        decoded_url = unquote(decoded_url)
+                except:
+                    decoded_url = encoded_url
+
+                link_id = f"{ns}-{counter}"
+                link_map[encoded_url] = (link_id, decoded_url)
+
+                # 存入数据库
+                try:
+                    with sqlite3.connect(DB_PATH, timeout=15) as conn:
+                        conn.execute("INSERT OR REPLACE INTO links (id, url) VALUES (?, ?)", (link_id, decoded_url))
+                except:
+                    pass
+                counter += 1
+
+            textarea_link_maps.append((ta, link_map))
+
+    # 替换 textarea 内容里的链接
+    for ta, link_map in textarea_link_maps:
+        if ta.string:
+            content = ta.string
+            for encoded_url, (link_id, decoded_url) in link_map.items():
+                # 替换 "linkurl": "xxx" 为 "linkurl": "@ns-id"
+                content = content.replace(f'"linkurl":"{encoded_url}"', f'"linkurl":"@{link_id}"')
+                content = content.replace(f'"linkurl": "{encoded_url}"', f'"linkurl": "@{link_id}"')
+            ta.string = content
+
     try:
         markdown = markdownify.markdownify(str(root), heading_style="ATX")
     except:
         markdown = root.get_text(separator='\n\n', strip=True)
 
-    # 关键 2/2：双重保险 - 即使上面没清理干净，这里用正则强制移除所有 style 标签内容
-    markdown = re.sub(r'<style[^>]*>.*?</style>', '', markdown, flags=re.I | re.S)
-    # 同时也移除 script 标签内容
-    markdown = re.sub(r'<script[^>]*>.*?</script>', '', markdown, flags=re.I | re.S)
+    # 关键 3/3：双重保险 - 清理剩余的 script/style/link
+    for tag in ['style', 'script', 'link']:
+        markdown = re.sub(rf'<{tag}[^>]*>.*?</{tag}>', '', markdown, flags=re.I | re.S)
 
     # 清洗多余换行
     markdown = re.sub(r'\n{3,}', '\n\n', markdown).strip()
