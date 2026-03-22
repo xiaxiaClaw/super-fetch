@@ -262,7 +262,7 @@ class BatchFetcher:
         urls: List[str],
         engine: str = "playwright",
         proxy: Optional[str] = None,
-        retries: int = 2,
+        retries: int = 0,
         session_path: Optional[str] = None,
         wait: int = 2,
         full_mode: bool = False,
@@ -471,7 +471,7 @@ def main():
     )
     parser.add_argument("--wait", "-w", type=int, default=None, help="渲染等待秒数")
     parser.add_argument("--proxy", "-p", help="代理设置")
-    parser.add_argument("--retries", "-r", type=int, default=2, help="失败重试次数")
+    parser.add_argument("--retries", "-r", type=int, default=0, help="失败重试次数")
     parser.add_argument("--output", "-o", help="输出文件路径（批量模式为 JSON，单 URL 为二进制）")
 
     # 单 URL 模式参数

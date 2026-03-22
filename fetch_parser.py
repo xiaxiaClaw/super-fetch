@@ -215,9 +215,6 @@ def clean_noise_elements(soup):
 
 def extract_page_content(html: str, url: str, full_mode: bool = False):
     """解析 HTML 并转化为结构化 Markdown"""
-    # 预清洗
-    html = re.sub(r'<(script|style|noscript)[^>]*>.*?</\1>', '', html, flags=re.I | re.S)
-
     soup = BeautifulSoup(html, 'html.parser')
     if soup.title and soup.title.string:
         title = soup.title.string.strip()
@@ -232,6 +229,14 @@ def extract_page_content(html: str, url: str, full_mode: bool = False):
         # 获取最佳内容节点
         root = get_best_content_node(soup)
 
+    # 关键 1/2：无论哪种模式，最后都必须清理 root 里的 style/script 等噪音标签
+    # 防止 markdownify 把 CSS/JS 也转换成 Markdown
+    for elem in root.find_all(['script', 'style', 'noscript', 'svg', 'canvas']):
+        try:
+            elem.decompose()
+        except:
+            pass
+
     # 移除 base64 图片
     remove_base64_images(root)
 
@@ -241,6 +246,11 @@ def extract_page_content(html: str, url: str, full_mode: bool = False):
         markdown = markdownify.markdownify(str(root), heading_style="ATX")
     except:
         markdown = root.get_text(separator='\n\n', strip=True)
+
+    # 关键 2/2：双重保险 - 即使上面没清理干净，这里用正则强制移除所有 style 标签内容
+    markdown = re.sub(r'<style[^>]*>.*?</style>', '', markdown, flags=re.I | re.S)
+    # 同时也移除 script 标签内容
+    markdown = re.sub(r'<script[^>]*>.*?</script>', '', markdown, flags=re.I | re.S)
 
     # 清洗多余换行
     markdown = re.sub(r'\n{3,}', '\n\n', markdown).strip()
