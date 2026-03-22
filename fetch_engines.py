@@ -237,13 +237,14 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
 
 
 async def fetch_target(url, engine, proxy, retries, session_file, is_interactive, wait, timeout=30):
-    for i in range(retries):
+    # retries=0 表示只尝试 1 次，不重试；retries=N 表示尝试 N+1 次
+    for i in range(retries + 1):
         try:
             if engine == 'playwright':
                 return await fetch_with_playwright(url, proxy, timeout, session_file, is_interactive, wait)
             return await fetch_with_curl_cffi(url, proxy, timeout, session_file)
         except Exception as e:
-            if i == retries - 1:
+            if i == retries:  # 最后一次尝试失败才抛出异常
                 raise e
             await asyncio.sleep(1)
 
