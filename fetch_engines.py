@@ -227,7 +227,13 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
 
             # 检查页面是否被关闭（用户在交互模式关窗口，或其他异常）
             if page.is_closed():
-                print("[*] 浏览器已被关闭，退出。")
+                print("[*] 浏览器已被关闭，尝试保存会话...")
+                if session_file:
+                    try:
+                        await context.storage_state(path=session_file)
+                        print(f"[*] ✅ 会话已保存: {session_file}")
+                    except Exception:
+                        pass
                 return "", "text/html"
 
             if session_file:
