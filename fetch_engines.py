@@ -225,8 +225,16 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
             else:
                 await asyncio.sleep(wait)
 
+            # 检查页面是否被关闭（用户在交互模式关窗口，或其他异常）
+            if page.is_closed():
+                print("[*] 浏览器已被关闭，退出。")
+                return "", "text/html"
+
             if session_file:
-                await context.storage_state(path=session_file)
+                try:
+                    await context.storage_state(path=session_file)
+                except Exception:
+                    pass
 
             content = await page.content()
             try:
@@ -235,7 +243,10 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                 ctype = 'text/html'
             return content, ctype
         finally:
-            await browser.close()
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
 
 async def fetch_target(url, engine, proxy, retries, session_file, is_interactive, wait, timeout=30):
