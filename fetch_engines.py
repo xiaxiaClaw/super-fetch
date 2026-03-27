@@ -188,6 +188,8 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
         page = await context.new_page()
         if playwright_stealth:
             try:
+                # 先设置 user_agent，避免 stealth_async 内部创建临时 page 来探测 UA
+                await page.set_user_agent(REAL_HEADERS["User-Agent"])
                 await playwright_stealth.stealth_async(page)
             except:
                 pass
@@ -326,6 +328,8 @@ class PlaywrightPool:
             page = await context.new_page()
             if playwright_stealth:
                 try:
+                    # 先设置 user_agent，避免 stealth_async 内部创建临时 page 来探测 UA
+                    await page.set_user_agent(self.user_agent)
                     await playwright_stealth.stealth_async(page)
                 except:
                     pass
