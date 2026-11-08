@@ -32,7 +32,7 @@ playwright install chromium
 
 首次运行时会自动创建数据目录：
 
-- **Linux/macOS**: `~/.openclaw/super-fetch/`
+- **Linux/macOS**: `~/.agents/super-fetch/`
 - **Windows**: `%USERPROFILE%\.openclaw\super-fetch\`
 
 存储内容：

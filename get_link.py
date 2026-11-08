@@ -16,8 +16,9 @@ def main():
         "--clear",
         "-c",
         action="store_true",
-        help="清理模式。若带参数则清理指定项，不带参数则清空全部。",
+        help="清理模式。若带参数则清理指定项，不带参数则清空全部（需配 --yes）。",
     )
+    parser.add_argument("--yes", "-y", action="store_true", help="确认清空全部记录")
     args = parser.parse_args()
 
     if not os.path.exists(DB_PATH) and not args.clear:
@@ -29,7 +30,12 @@ def main():
         with sqlite3.connect(DB_PATH, timeout=20) as conn:
             if args.clear:
                 if not args.ids:
-                    # 情况 1: 完全清空
+                    # 情况 1: 完全清空 —— 必须显式确认，防手滑
+                    if not args.yes:
+                        total = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0]
+                        print(f"拒绝执行：将清空全部 {total} 条链接记录。"
+                              f"确认请加 --yes。")
+                        return
                     conn.execute("DELETE FROM links")
                     print("[*] 🧹 已清空数据库中所有链接记录。")
                 else:

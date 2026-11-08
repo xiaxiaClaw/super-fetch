@@ -8,10 +8,24 @@ from typing import Optional, Tuple
 from curl_cffi.requests import AsyncSession
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
-from core import REAL_HEADERS
+from core import REAL_HEADERS, STEALTH_JS, secure_file
 
 
-import playwright_stealth
+try:  # playwright-stealth 2.x 用类式 API，1.x 才是 stealth_async 函数
+    import playwright_stealth
+    from playwright_stealth import Stealth as _Stealth
+except ImportError:  # 没装就别拦着抓取
+    playwright_stealth = None
+    _Stealth = None
+
+
+async def apply_stealth(page):
+    """兼容 playwright-stealth 1.x / 2.x 的注入入口。"""
+    if _Stealth is not None:
+        await _Stealth().apply_stealth_async(page)
+        return
+    if playwright_stealth is not None and hasattr(playwright_stealth, "stealth_async"):
+        await playwright_stealth.stealth_async(page)
 
 
 def atomic_write_json(data: dict, filepath: str):
@@ -38,13 +52,18 @@ def atomic_write_json(data: dict, filepath: str):
         raise e
 
 
-def format_session_data(session_file: str, target_url: str = "") -> dict:
-    """自动识别并转换各种 Cookie 格式为 Playwright StorageState 格式"""
+def format_session_data(session_file: str, target_url: str = "", persist: bool = False) -> dict:
+    """自动识别并转换各种 Cookie 格式为 Playwright StorageState 格式。
+
+    persist=False（默认）只做内存转换，**不改动用户文件**；
+    只有显式传 persist=True（如 --convert-session）才写回。
+    """
     default_state = {"cookies": [], "origins": []}
     if not session_file or not os.path.exists(session_file):
         return default_state
 
     try:
+        secure_file(session_file)   # 会话里有 Cookie，顺手收紧权限
         with open(session_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
@@ -77,14 +96,21 @@ def format_session_data(session_file: str, target_url: str = "") -> dict:
                     "secure": False, "sameSite": "Lax"
                 })
 
-        atomic_write_json(pw_state, session_file)
+        if persist:
+            atomic_write_json(pw_state, session_file)
+            secure_file(session_file)
         return pw_state
     except Exception as e:
         print(f"[*] ⚠️ Session 转换警告: {e}", file=sys.stderr)
         return default_state
 
 
-async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, session_file: str = None) -> tuple:
+async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15,
+                              session_file: str = None, session=None) -> tuple:
+    """抓取单个 URL。
+
+    传入 session（AsyncSession）时复用它——批量抓取可以省掉每个 URL 一次 TLS 握手。
+    """
     proxies = {"http": proxy, "https": proxy} if proxy else None
     cffi_cookies = {}
 
@@ -94,37 +120,94 @@ async def fetch_with_curl_cffi(url: str, proxy: str = None, timeout: int = 15, s
         for c in pw_state.get("cookies", []):
             cffi_cookies[c["name"]] = c["value"]
 
-    async with AsyncSession(impersonate="chrome120", proxies=proxies, timeout=timeout, headers=REAL_HEADERS, cookies=cffi_cookies) as session:
-        response = await session.get(url)
+    async def _fetch(sess):
+        from urllib.parse import urlparse as _up2
+        _u = _up2(url)
+        _h = {"Referer": f"{_u.scheme}://{_u.netloc}/",
+              "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+              "Sec-Fetch-Site": "same-origin", "Upgrade-Insecure-Requests": "1"}
+        response = await sess.get(url, headers=_h)
         response.raise_for_status()
-
-        # 处理可能的二进制或文本内容
         ctype = response.headers.get("content-type", "").lower()
         if any(t in ctype for t in ["text", "json", "xml", "javascript"]):
-            content = response.text
-        else:
-            content = response.content
+            return response.text, ctype
+        return response.content, ctype
 
-        return content, ctype
+    if session is not None:
+        return await _fetch(session)
+
+    async with AsyncSession(impersonate="chrome120", proxies=proxies, timeout=timeout,
+                            headers=REAL_HEADERS, cookies=cffi_cookies) as sess:
+        return await _fetch(sess)
+
+
+async def _harden(ctx):
+    """统一给浏览器上下文加反检测脚本与时区。"""
+    try:
+        await ctx.add_init_script(STEALTH_JS)
+    except Exception:
+        pass
+
+
+def _ensure_display():
+    """有头模式需要 DISPLAY；没设就用 :0（Wayland 下走 XWayland）。"""
+    if not os.environ.get('DISPLAY') and os.path.exists('/tmp/.X11-unix/X0'):
+        os.environ['DISPLAY'] = ':0'
+
+
+
+def _looks_skeleton_text(text: str) -> bool:
+    """骨架屏检测：Vuetify 的 v-skeleton-loader 会把占位符渲染成一排 "word"。
+
+    2026-11-08 西南交大图书馆数据库列表踩过：等到 3 秒时抓到的正文是
+    "word word word ..."（1061 字），真实内容（124 个数据库）要到 5-10 秒才出现。
+    """
+    if not text:
+        return False
+    toks = text.split()
+    if len(toks) < 20:
+        return False
+    strip_chars = '.,;:!?[](){}"\'`*#-_'
+    words = sum(1 for t in toks if t.strip(strip_chars).lower() == 'word')
+    return words >= 20 and words >= len(toks) * 0.3
+
+
+async def _wait_until_rendered(page, tries: int = 3, step: float = 3.0) -> None:
+    """页面还停在骨架屏就多等几轮（最多 tries 轮，每轮 step 秒）。"""
+    for _ in range(tries):
+        try:
+            txt = await page.evaluate(
+                "document.body ? document.body.innerText.slice(0, 20000) : ''")
+        except Exception:
+            return
+        if not _looks_skeleton_text(txt):
+            return
+        await asyncio.sleep(step)
 
 
 async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, session_file: str = None, is_interactive: bool = False, wait: int = 3) -> tuple:
     async with async_playwright() as p:
-        launch_args = ['--disable-blink-features=AutomationControlled']
+        launch_args = ['--disable-blink-features=AutomationControlled',
+                       # 交互模式（-i 登录）必须让人看见窗口，否则没法输账号验证码
+                       f'--window-position={"120,80" if is_interactive else "-2400,-2400"}',
+                       '--window-size=1280,900']
         if sys.platform != 'win32':
             launch_args.append('--no-sandbox')
 
+        _ensure_display()
         browser = await p.chromium.launch(
-            headless=not is_interactive,
+            headless=False,          # 永不 headless：无头指纹会被站点识别
             proxy={"server": proxy} if proxy else None,
             args=launch_args
         )
 
-        context_args = {"viewport": {"width": 1280, "height": 800}, "locale": "zh-CN", "user_agent": REAL_HEADERS["User-Agent"]}
+        # 不覆盖 UA：使用浏览器真实版本，避免 UA 与实际内核/指纹不一致
+        context_args = {"viewport": {"width": 1280, "height": 800}, "locale": "zh-CN"}
         if session_file and os.path.exists(session_file):
             context_args["storage_state"] = session_file
 
-        context = await browser.new_context(**context_args)
+        context = await browser.new_context(timezone_id="Asia/Shanghai", **context_args)
+        await _harden(context)
 
         # 优化后的注入 JS
         inject_js = """
@@ -186,20 +269,23 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
             await context.add_init_script(inject_js)
 
         page = await context.new_page()
-        if playwright_stealth:
+        if playwright_stealth or _Stealth:
             try:
-                # 先设置 user_agent，避免 stealth_async 内部创建临时 page 来探测 UA
-                await page.set_user_agent(REAL_HEADERS["User-Agent"])
-                await playwright_stealth.stealth_async(page)
-            except:
-                pass
+                # 不再手动改 UA（会与真实内核版本不符）
+                await apply_stealth(page)
+            except Exception as e:
+                print(f"[*] ⚠️ stealth 注入失败（继续抓取）: {e}", file=sys.stderr)
 
         try:
             # 使用 try-except 包装 goto，防止因某些资源加载失败导致程序崩溃
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=timeout*1000)
-            except Exception as e:
-                print(f"[*] 页面加载超时或部分失败 (继续尝试注入按钮): {e}")
+                # 先等网络空闲（SPA 的 XHR 更可能已经回来）；等不到也不致命
+                await page.goto(url, wait_until="networkidle", timeout=timeout*1000)
+            except Exception:
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout*1000)
+                except Exception as e:
+                    print(f"[*] 页面加载超时或部分失败（继续）: {str(e)[:80]}", file=sys.stderr)
 
             if is_interactive:
                 # 2. 页面加载后再次手动注入，确保按钮存在
@@ -224,6 +310,7 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                     await asyncio.sleep(0.5)
             else:
                 await asyncio.sleep(wait)
+                await _wait_until_rendered(page)
 
             # 检查页面是否被关闭（用户在交互模式关窗口，或其他异常）
             if page.is_closed():
@@ -236,11 +323,14 @@ async def fetch_with_playwright(url: str, proxy: str = None, timeout: int = 30, 
                         pass
                 return "", "text/html"
 
-            if session_file:
+            # 只有交互模式（用户亲自登录）才把会话落盘；
+            # 批量并发时多个 context 写同一个文件会互相覆盖。
+            if session_file and is_interactive:
                 try:
                     await context.storage_state(path=session_file)
-                except Exception:
-                    pass
+                    secure_file(session_file)
+                except Exception as e:
+                    print(f"[*] ⚠️ 会话保存失败: {e}", file=sys.stderr)
 
             content = await page.content()
             try:
@@ -282,13 +372,13 @@ class PlaywrightPool:
         self,
         proxy: Optional[str] = None,
         pool_size: int = 3,
-        headless: bool = True,
+        headless: bool = False,
         user_agent: Optional[str] = None,
     ):
         self.proxy = proxy
         self.pool_size = pool_size
         self.headless = headless
-        self.user_agent = user_agent or REAL_HEADERS["User-Agent"]
+        self.user_agent = user_agent  # None = 用浏览器自带 UA
 
         self._playwright = None
         self._browser: Optional[Browser] = None
@@ -306,10 +396,12 @@ class PlaywrightPool:
 
             self._playwright = await async_playwright().start()
 
-            launch_args = ['--disable-blink-features=AutomationControlled']
+            launch_args = ['--disable-blink-features=AutomationControlled',
+                           '--window-position=-2400,-2400', '--window-size=1280,900']
             if sys.platform != 'win32':
                 launch_args.append('--no-sandbox')
 
+            _ensure_display()
             self._browser = await self._playwright.chromium.launch(
                 headless=self.headless,
                 proxy={"server": self.proxy} if self.proxy else None,
@@ -333,8 +425,9 @@ class PlaywrightPool:
             context_args = {
                 "viewport": {"width": 1280, "height": 800},
                 "locale": "zh-CN",
-                "user_agent": self.user_agent
             }
+            if self.user_agent:
+                context_args["user_agent"] = self.user_agent
 
             if session_file and os.path.exists(session_file):
                 context_args["storage_state"] = session_file
@@ -343,20 +436,17 @@ class PlaywrightPool:
 
             # 注入 stealth（如果可用）
             page = await context.new_page()
-            if playwright_stealth:
+            if playwright_stealth or _Stealth:
                 try:
-                    # 先设置 user_agent，避免 stealth_async 内部创建临时 page 来探测 UA
-                    await page.set_user_agent(self.user_agent)
-                    await playwright_stealth.stealth_async(page)
-                except:
-                    pass
+                    # 不再手动改 UA（会与真实内核版本不符）
+                    await apply_stealth(page)
+                except Exception as e:
+                    print(f"[*] ⚠️ stealth 注入失败（继续抓取）: {e}", file=sys.stderr)
 
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
                 await asyncio.sleep(wait)
-
-                if session_file:
-                    await context.storage_state(path=session_file)
+                await _wait_until_rendered(page)
 
                 content = await page.content()
                 try:
@@ -382,3 +472,118 @@ class PlaywrightPool:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
+
+
+async def playwright_probe(url: str, session_file: str = None, eval_js: str = None,
+                           xhr_pattern: str = None, wait: int = 6, timeout: int = 45,
+                           show: bool = False, replay: bool = False,
+                           replaces: list = None) -> str:
+    """返回 JS（--xhr）或在页面里执行 JS（--eval）。
+
+    走有头浏览器（无头会被站点识别）。返回一个 JSON 字符串。
+    """
+    import json as _json
+    pos = "120,80" if show else "-2400,-2400"
+    _ensure_display()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False, args=[
+            '--no-sandbox', '--disable-blink-features=AutomationControlled',
+            f'--window-position={pos}', '--window-size=1280,900'])
+        ctx_args = {"locale": "zh-CN", "viewport": {"width": 1366, "height": 900}}
+        if session_file and os.path.exists(session_file):
+            ctx_args["storage_state"] = session_file
+        ctx = await browser.new_context(timezone_id="Asia/Shanghai", **ctx_args)
+        await _harden(ctx)
+        page = await ctx.new_page()
+
+        keep_body = bool(replay)          # 只列候选时不回大 body，省 token
+        captured = []
+        if xhr_pattern is not None:
+            async def on_resp(resp):
+                try:
+                    req = resp.request
+                    if req.resource_type not in ('xhr', 'fetch'):
+                        return
+                    if xhr_pattern and xhr_pattern not in resp.url:
+                        return
+                    body = await resp.text()
+                    ct = resp.headers.get('content-type', '')
+                    item = {
+                        'url': resp.url.split('?')[0],
+                        'url_full': resp.url,
+                        'status': resp.status,
+                        'method': req.method,
+                        'request_body': (req.post_data or '')[:4000],
+                        'content_type': ct,
+                        'bytes': len(body),
+                        'looks_json': body.lstrip()[:1] in ('{', '['),
+                        'preview': body[:180].replace('\n', ' '),
+                    }
+                    if keep_body:
+                        item['body'] = body[:20000]
+                    captured.append(item)
+                except Exception:
+                    pass
+            page.on('response', lambda r: asyncio.create_task(on_resp(r)))
+
+        result = {'url': url}
+        try:
+            await page.goto(url, timeout=timeout * 1000, wait_until='domcontentloaded')
+            await page.wait_for_timeout(max(wait, 2) * 1000)
+        except Exception as e:
+            result['goto_error'] = str(e)
+
+        if eval_js:
+            try:
+                result['result'] = await page.evaluate(eval_js)
+            except Exception as e:
+                result['eval_error'] = str(e)
+        if xhr_pattern is not None:
+            result['count'] = len(captured)
+            result['captured'] = captured
+            if replay and captured:
+                entry = dict(captured[0])
+                if replaces:                      # 实验：替换请求里的参数再回放
+                    body = entry.get('request_body') or ''
+                    url = entry.get('url_full') or ''
+                    from urllib.parse import quote
+                    for pair in replaces:
+                        if '=' not in pair:
+                            continue
+                        old, new = pair.split('=', 1)
+                        for o, n in ((old, new), (quote(old, safe=''), quote(new, safe=''))):
+                            body = body.replace(o, n)
+                            url = url.replace(o, n)
+                    entry['request_body'] = body
+                    entry['url_full'] = url
+                    result['replaced'] = replaces
+                result['replay'] = await _replay_captured(entry, await ctx.cookies())
+
+        await browser.close()
+        return _json.dumps(result, ensure_ascii=False)
+
+
+async def _replay_captured(entry: dict, cookies: list) -> dict:
+    """用 curl_cffi 回放浏览器抓到的请求，验证“不开浏览器也能拿到”。"""
+    import time
+    from curl_cffi import requests as creq
+
+    jar = {c['name']: c['value'] for c in cookies if c.get('name')}
+    headers = {
+        'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                       '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'),
+        'Referer': entry.get('url', ''),
+        'X-Requested-With': 'XMLHttpRequest',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    }
+    body = entry.get('request_body') or None
+    t0 = time.time()
+    try:
+        r = creq.request(entry.get('method', 'POST'), entry.get('url_full') or entry['url'],
+                         data=body, headers=headers, cookies=jar,
+                         impersonate='chrome', timeout=30)
+        cost = time.time() - t0
+        return {'status': r.status_code, 'seconds': round(cost, 3),
+                'bytes': len(r.content), 'body_head': r.text[:3000]}
+    except Exception as e:
+        return {'error': str(e), 'seconds': round(time.time() - t0, 3)}

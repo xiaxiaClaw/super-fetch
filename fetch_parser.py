@@ -6,8 +6,9 @@ import string
 from urllib.parse import urlparse, urljoin, unquote
 from bs4 import BeautifulSoup, Comment
 import markdownify
+from markdownify import MarkdownConverter
 
-from core import DATA_DIR, DB_PATH
+from core import DATA_DIR, DB_PATH, secure_file
 
 
 def init_db():
@@ -18,6 +19,7 @@ def init_db():
                             (id TEXT PRIMARY KEY, url TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
             if random.random() < 0.05:
                 conn.execute("DELETE FROM links WHERE created_at <= datetime('now', '-7 days')")
+        secure_file(DB_PATH)
     except Exception as e:
         import sys
         print(f"[*] ⚠️ 数据库初始化异常: {e}", file=sys.stderr)
@@ -78,10 +80,7 @@ def calculate_content_score(node):
     """
     保守的正文提取算法 - 宁滥勿缺
     """
-    # 先移除脚本等噪音元素的影响
-    for elem in node(['script', 'style', 'noscript']):
-        elem.decompose()
-
+    # 只读评分：不修改 DOM（清理交给 clean_noise_elements）
     text = node.get_text(strip=True)
     text_len = len(text)
 
@@ -140,23 +139,62 @@ def calculate_content_score(node):
     return score
 
 
+def _dom_text_len(soup):
+    """整个 body 的可见文本量，用作兜底基准。"""
+    body = soup.body or soup
+    try:
+        return len(body.get_text(strip=True))
+    except Exception:
+        return 0
+
+
+def _max_block_len(soup):
+    """body 直接子节点里最大的那块文本量 —— 「正文应该有多大」的参照物。
+
+    比整个 body 更靠谱：body 常被语言列表、导航、脚本渲染的菜单撑大好几倍，
+    拿 body 当基准会把真正的正文容器判成"太小"。
+    """
+    body = soup.body or soup
+    best = 0
+    try:
+        for child in body.find_all(recursive=False):
+            try:
+                best = max(best, len(child.get_text(strip=True)))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return best or _dom_text_len(soup)
+
+
 def get_best_content_node(soup):
     """
     保守策略：优先考虑 body，只移除明显噪音
+
+    关键：命中「正文容器」还要看体量——必须达到页面最大块的四分之一才算数。
+    否则像 Vuetify/SPA 那种页面，随便一个 class="content" 的页脚 div（150 字）
+    就会把整页正文挤掉（2026-11-08 西南交大图书馆数据库列表踩过：候选 153 字，
+    页面正文 2500 字，结果只剩版权声明）。
     """
-    # 策略 1: 语义化标签 - 降低门槛
+    max_block = _max_block_len(soup)
+    threshold = max(50, int(max_block * 0.25))
+
+    def big_enough(text):
+        return len(text) >= threshold
+
+    # 策略 1: 语义化标签
     semantic_tags = ['article', 'main', '[role="main"]']
     for tag in semantic_tags:
         try:
             elem = soup.select_one(tag)
             if elem:
                 text = elem.get_text(strip=True)
-                if len(text) > 50:
+                if big_enough(text):
                     return elem
         except:
             pass
 
-    # 策略 2: 查找常见的正文容器
+    # 策略 2: 查找常见的正文容器（同样要过比例门槛）
     common_selectors = [
         '.post-content', '.entry-content', '.article-content',
         '#post-content', '#entry-content', '#article-content',
@@ -168,12 +206,12 @@ def get_best_content_node(soup):
             elem = soup.select_one(selector)
             if elem:
                 text = elem.get_text(strip=True)
-                if len(text) > 50:
+                if big_enough(text):
                     return elem
         except:
             pass
 
-    # 策略 3: 评分算法 - 更宽松
+    # 策略 3: 评分算法
     candidates = []
     for tag in soup.find_all(['div', 'article', 'section', 'main', 'body']):
         score = calculate_content_score(tag)
@@ -182,10 +220,9 @@ def get_best_content_node(soup):
 
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
-        # 取最高分
         for score, tag in candidates:
             text = tag.get_text(strip=True)
-            if len(text) > 30:
+            if big_enough(text):
                 return tag
 
     # 策略 4: 直接用 body，只移除最明显的噪音
@@ -213,9 +250,25 @@ def clean_noise_elements(soup):
             pass
 
 
+def make_soup(html):
+    """优先用 lxml（快 20-30%），没装则退回标准库解析器"""
+    try:
+        return BeautifulSoup(html, 'lxml')
+    except Exception:
+        return BeautifulSoup(html, 'html.parser')
+
+
+def to_markdown(root) -> str:
+    """直接把已有的 soup 节点转 Markdown，避免每次重新解析 HTML（快 2-3 倍）"""
+    try:
+        return MarkdownConverter(heading_style="ATX").convert_soup(root)
+    except Exception:
+        return markdownify.markdownify(str(root), heading_style="ATX")
+
+
 def extract_page_content(html: str, url: str, full_mode: bool = False):
     """解析 HTML 并转化为结构化 Markdown"""
-    soup = BeautifulSoup(html, 'html.parser')
+    soup = make_soup(html)
     if soup.title and soup.title.string:
         title = soup.title.string.strip()
     else:
@@ -243,8 +296,7 @@ def extract_page_content(html: str, url: str, full_mode: bool = False):
     ns = process_links_to_ids(root, url)
 
     # 关键 2/3：处理 textarea 里的 JSON 数据，把里面的链接也转成代号
-    # 我们需要先收集所有 textarea，处理后替换内容
-    init_db()
+    # （init_db 已在 process_links_to_ids 里调用过）
     counter = 1
     textarea_link_maps = []  # 保存每个 textarea 的替换映射
 
@@ -291,8 +343,8 @@ def extract_page_content(html: str, url: str, full_mode: bool = False):
             ta.string = content
 
     try:
-        markdown = markdownify.markdownify(str(root), heading_style="ATX")
-    except:
+        markdown = to_markdown(root)
+    except Exception:
         markdown = root.get_text(separator='\n\n', strip=True)
 
     # 关键 3/3：双重保险 - 清理剩余的 script/style/link
@@ -302,3 +354,35 @@ def extract_page_content(html: str, url: str, full_mode: bool = False):
     # 清洗多余换行
     markdown = re.sub(r'\n{3,}', '\n\n', markdown).strip()
     return title, markdown, ns
+
+
+# ---------------------------------------------------------------- 内嵌数据
+_EMBED = [
+    (r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', 'NEXT_DATA'),
+    (r'window\.__NUXT__\s*=\s*(\{.*?\})\s*;?\s*</script>', 'NUXT'),
+    (r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*;?\s*</script>', 'INITIAL_STATE'),
+    (r'window\.__APOLLO_STATE__\s*=\s*(\{.*?\})\s*;?\s*</script>', 'APOLLO_STATE'),
+    (r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', 'JSON-LD'),
+]
+
+
+def extract_embedded_data(html: str, min_bytes: int = 200, limit: int = 3):
+    """从 HTML 里挖出服务端注水的 JSON（很多“JS 才能显示”的页面其实数据在源码里）。
+
+    返回 [{'kind','bytes','data'}]，按体积降序，最多 limit 条。
+    """
+    import json as _json
+    import re as _re
+    out = []
+    for pat, kind in _EMBED:
+        for m in _re.finditer(pat, html, _re.S | _re.I):
+            raw = m.group(1).strip()
+            if len(raw) < min_bytes:
+                continue
+            try:
+                data = _json.loads(raw)
+            except Exception:
+                continue
+            out.append({'kind': kind, 'bytes': len(raw), 'data': data})
+    out.sort(key=lambda x: x['bytes'], reverse=True)
+    return out[:limit]

@@ -44,6 +44,6 @@ python fetch.py -F urls.txt
 
 ## 数据存储
 
-- 目录：`~/.openclaw/super-fetch/`
+- 目录：`~/.agents/super-fetch/`
 - `links.db` - 链接代号映射
 - `*.json` - 会话文件

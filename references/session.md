@@ -30,7 +30,7 @@ python fetch.py https://example.com/private -s
 
 1. 安装浏览器插件 [Cookie-Editor](https://cookie-editor.com/)
 2. 登录目标网站，导出 JSON
-3. 保存到 `~/.openclaw/super-fetch/my_cookies.json`
+3. 保存到 `~/.agents/super-fetch/my_cookies.json`
 4. 使用：`python fetch.py https://example.com -s my_cookies.json`
 
 ### 支持的 Cookie 格式
